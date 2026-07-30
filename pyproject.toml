@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tartan_imu"
+version = "0.1.0"
+description = "Tartan IMU: a light foundation model for humanoid/robotic inertial positioning."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Shibo Zhao" }]
+keywords = ["imu", "inertial-odometry", "state-estimation", "robotics", "deep-learning"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Runtime dependencies (inferred from actual imports across tartan_imu/).
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "rich>=13.0",
+    "matplotlib>=3.6",
+    "pyyaml>=6.0",
+    "tqdm>=4.64",
+    "einops>=0.6",
+]
+
+[project.optional-dependencies]
+# Experiment tracking (used by the training CLI; not needed to import the library).
+logging = ["wandb>=0.15"]
+# Development / linting / tests.
+dev = ["ruff>=0.1", "pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://superodometry.com/tartanimu"
+Repository = "https://github.com/superxslam/TartanIMU"
+
+[tool.setuptools.packages.find]
+# Ship only the library package; top-level scripts (train.py/test.py/main_net.py)
+# and dev-only dirs are intentionally excluded from the installable package.
+include = ["tartan_imu*"]
+
+[tool.ruff]
+# Match the settings the cleanup was verified against.
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+# starter/kaggle_metric_ate20.py is the byte-for-byte copy of the scorer running
+# on the competition leaderboard (md5 4fd4fe9c12a4de1dff473761ad57ac8c) so that
+# participants can verify it. It must not be reformatted; its compact
+# quaternion-to-rotation-matrix rows use semicolons.
+"starter/kaggle_metric_ate20.py" = ["E702"]
