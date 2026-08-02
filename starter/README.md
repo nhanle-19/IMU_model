@@ -42,10 +42,21 @@ window_id,vx,vy,vz
 
 `vx, vy, vz` is the predicted mean **body-frame** velocity (m/s) of that window.
 
-## Scoring — macro-averaged 20 m-segment ATE (lower is better)
+## Scoring — the TartanIMU Score (lower is better)
 
-The leaderboard metric is **macro-averaged 20 m-segment Absolute Trajectory
-Error**, in metres:
+The leaderboard metric is the **TartanIMU Score**, a dimensionless combination of
+two components:
+
+```
+TartanIMU Score = 0.6 × (AVE / 0.7356384388)  +  0.4 × (ATE20 / 3.1160277267)
+```
+
+| | Component | Unit | What it measures |
+| --- | --- | --- | --- |
+| **60 %** | **AVE** — Absolute Velocity Error | m/s | **Instantaneous accuracy.** The mean over a trajectory's windows of the Euclidean error `‖v_pred − v_gt‖` — the quantity a downstream state estimator actually consumes. |
+| **40 %** | **ATE20** — 20 m-segment Absolute Trajectory Error | m | **Temporal consistency.** Integrate the predictions into a path and compare it with the true path over fixed 20 m pieces. This punishes correlated bias and drift that a per-window average hides. |
+
+ATE20 in detail:
 
 1. Each test trajectory's ground-truth path is cut into consecutive segments of
    about **20 m of travelled distance**.
@@ -56,23 +67,48 @@ Error**, in metres:
 3. The estimated segment is **SE(3)-aligned** to the ground-truth segment
    (Umeyama, rotation + translation, no scale); its error is the RMS position
    error after alignment.
-4. Trajectory error = mean over its segments; platform error = mean over its
-   trajectories; the **score is the equal-weight mean of the four per-platform
-   values**, so no platform (or window count) dominates.
+4. Trajectory error = mean over its segments.
 
-Segments rather than whole trajectories, because a whole-trajectory ATE rewards
-predicting nothing: an all-zero submission integrates to a single point whose
-aligned error is merely the path's radius of gyration. With fixed-length
-segments, standing still loses on **every** platform.
+Both components use the same hierarchical averaging: per window → mean over a
+trajectory → mean over a platform's trajectories → **equal-weight mean over the
+four platforms**, so each platform carries exactly 25 % of each term and no
+platform (or window count) dominates.
 
-The exact scoring code is `starter/kaggle_metric_ate20.py` — byte-identical to
-the metric running on the leaderboard. You cannot score the test set locally
-(the pose is withheld), but you can **self-score on the labelled `val` split**
-while iterating.
+Two properties worth knowing before you tune:
 
-Reference points (Public / Private): ground-truth velocities **0.162 / 0.147**
-(the floor), released unified baseline **1.587 / 1.048**, all-zeros
-**3.058 / 3.103**, per-platform mean velocity **3.154 / 3.870**.
+- **The all-zero submission scores exactly 1.000.** Any score above 1.0 is worse
+  than submitting nothing at all. Scoring ATE20 over *segments* rather than whole
+  trajectories is what makes that true: a whole-trajectory ATE rewards predicting
+  nothing, because an all-zero submission integrates to a single point whose
+  aligned error is merely the path's radius of gyration. With fixed-length
+  segments, standing still loses on **every** platform.
+- **The stated 60 / 40 weights are the weights that actually act.** Each
+  component is divided by the value the all-zero submission reaches on the full
+  test set, which puts m/s and metres on a common scale. Un-normalized, ATE20
+  spans roughly 0.15 – 3.5 m while AVE spans only 0.0 – 0.75 m/s, so a raw
+  `0.6·AVE + 0.4·ATE20` would let ATE20 drive about 75 % of the ranking. The two
+  constants are fixed properties of the test set, published on the **Evaluation**
+  tab, and are not adjusted during the competition.
+
+The exact scoring code is `starter/kaggle_metric_tartanimu_score.py` — the same
+scorer that runs on the leaderboard. You cannot score the test set locally (the
+pose is withheld), but you can **self-score on the labelled `val` split** while
+iterating.
+
+Reference points, matching the Evaluation tab:
+
+| Submission | AVE (m/s) | ATE20 (m) | Score Public | Score Private |
+| --- | --- | --- | --- | --- |
+| ground-truth velocities (the floor) | 0.000 | 0.151 | 0.021 | 0.019 |
+| **released unified baseline** | 0.461 | 1.261 | **0.637** | **0.456** |
+| all-zeros (`sample_submission.csv`) | 0.736 | 3.116 | 1.054 | 0.922 |
+| per-platform mean velocity | 0.749 | 3.496 | 1.080 | 1.036 |
+
+The AVE and ATE20 columns are the macro-averaged components over the full test
+set; the two score columns are the combined metric on each split. The floor is
+0.019 rather than 0.000 because even exact per-window *average* velocities leave
+a small ATE20 residual when integrated — a one-second window cannot represent
+sub-second path curvature.
 
 ## Quick start
 
@@ -119,7 +155,7 @@ Upload the resulting CSV on the competition's **Submit Predictions** page.
 | `README.md` | this guide |
 | `baseline_submission.py` | writes an all-zero (or constant) valid submission |
 | `tartanimu_submission.py` | released pretrained baseline → submission |
-| `kaggle_metric_ate20.py` | the exact leaderboard metric (for reference / val self-scoring) |
+| `kaggle_metric_tartanimu_score.py` | the exact leaderboard metric (for reference / val self-scoring) |
 | `starter.ipynb` | notebook walking through data → prediction → submission |
 
 ## Pretrained model
