@@ -233,16 +233,25 @@ velocity `(vx, vy, vz)`.
 | [Foundation model](https://huggingface.co/Tartan-IMU/TartanIMU) | Download the released unified configuration and model weights |
 | [Live model demo](https://huggingface.co/spaces/Tartan-IMU/imu_odometry_challenge_demo) | Explore the reference models interactively |
 
-Submissions are scored with macro-averaged 20-meter segment Absolute
-Trajectory Error (ATE). The score weights all four platforms equally, and
-lower is better.
+Submissions are scored with the **TartanIMU Score**, a dimensionless combination
+of 60 % per-window Absolute Velocity Error (AVE, m/s) and 40 % 20-meter segment
+Absolute Trajectory Error (ATE20, m):
+
+```text
+TartanIMU Score = 0.6 * (AVE / 0.7356384388)  +  0.4 * (ATE20 / 3.1160277267)
+```
+
+Both components are macro-averaged so that all four platforms weigh equally, and
+each is normalized by the value the all-zero submission reaches on the test set,
+which makes the score dimensionless and pins an all-zero submission to exactly
+1.000. Lower is better; the released baseline scores 0.637 on the public split.
 
 | File | Purpose |
 | --- | --- |
 | `starter/starter.ipynb` | Data-to-submission walkthrough |
 | `starter/baseline_submission.py` | Valid zero or constant baseline |
 | `starter/tartanimu_submission.py` | Released model inference |
-| `starter/kaggle_metric_ate20.py` | Leaderboard metric for validation |
+| `starter/kaggle_metric_tartanimu_score.py` | Leaderboard metric for validation |
 
 Predictions must come from one model with one shared set of weights.
 Platform-specific internal routing is allowed, but four separately selected

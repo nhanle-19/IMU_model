@@ -16,7 +16,7 @@ to be chosen per trajectory. How that choice is made depends on the split:
 * **Labelled splits (train / val).** ``index/train_windows.csv`` and
   ``index/val_windows.csv`` carry a ``platform`` column; this script routes with
   it automatically. Use this to reproduce numbers and to self-score with
-  ``kaggle_metric_ate20.py``.
+  ``kaggle_metric_tartanimu_score.py``.
 * **The competition test split.** ``index/test_windows.csv`` is anonymized — it
   has no ``platform`` column and the ``.npz`` files carry no ``platform_id`` —
   so no routing signal ships with the data. Pass ``--head`` to force one head
