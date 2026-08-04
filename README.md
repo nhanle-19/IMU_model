@@ -1,7 +1,7 @@
 <h1 align="center">TartanIMU</h1>
 
 <p align="center">
-  <strong>A Light Foundation Model for Inertial Positioning in Robotics</strong>
+  <strong>A Light "Foundation Model" for Inertial Positioning in Robotics</strong>
   <br>
   CVPR 2025
 </p>
