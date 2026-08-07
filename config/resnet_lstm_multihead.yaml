@@ -11,3 +11,11 @@ model_param:
   lstm_layers: 2   # Increased layers for better temporal modeling
   lstm_dropout: 0.1  # Added dropout for regularization
   use_transformer: False
+  platform_conditioning:
+    enabled: True
+    classifier_sample_freq: 200
+    condition_mode: latent   # latent or index
+    latent_dim: 16
+    num_platforms: 4
+    loss_weight: 0.2
+    route_by_prediction: True

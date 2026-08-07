@@ -32,6 +32,9 @@ data:
   # IMU settings
   imu_freq: 200.0      # IMU frequency in Hz
   sample_freq: 40      # Sampling frequency
+  low_pass_filter:
+    enabled: True
+    kernel_size: 5
 
   # Gravity alignment settings
   gravity_alignment:

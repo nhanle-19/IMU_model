@@ -12,11 +12,50 @@ import logging
 from collections import Counter
 
 import torch
+import torch.nn.functional as F
 from tartan_imu.model.common.losses import (
     efficient_multi_head_smooth_loss,
     get_sequence_smooth_loss,
     multi_head_smooth_loss,
 )
+
+_PLATFORM_AUX_KEYS = {"_platform_logits", "_platform_probs"}
+
+
+def _unpack_batch(batch):
+    if len(batch) == 5:
+        feat, targ, aux, motion_type, platform_feat = batch
+    else:
+        feat, targ, aux, motion_type = batch
+        platform_feat = None
+    return feat, targ, aux, motion_type, platform_feat
+
+
+def _pop_platform_aux(outputs):
+    aux = {}
+    for key in _PLATFORM_AUX_KEYS:
+        if isinstance(outputs, dict) and key in outputs:
+            aux[key] = outputs.pop(key)
+    return aux
+
+
+def _add_platform_classification_loss(cfg, loss, platform_logits, motion_type):
+    pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
+    weight = float(pcfg.get("loss_weight", 0.0))
+    if platform_logits is None or weight <= 0:
+        return loss
+
+    num_platforms = int(pcfg.get("num_platforms", platform_logits.size(-1)))
+    labels = motion_type.long()
+    valid = (labels >= 1) & (labels <= num_platforms)
+    if not torch.any(valid):
+        return loss
+
+    labels = labels[valid] - 1
+    logits = platform_logits[valid]
+    labels = labels[:, None].expand(-1, logits.size(1)).reshape(-1)
+    logits = logits.reshape(-1, num_platforms)
+    return loss + weight * F.cross_entropy(logits, labels)
 
 
 def fun_train_forward(cfg, model, batch, start_cov_epochs, epoch):
@@ -33,19 +72,23 @@ def fun_train_forward(cfg, model, batch, start_cov_epochs, epoch):
     Returns:
         tuple: (predictions, covariances, targets, loss)
     """
-    feat, targ, _, motion_type = (
-        batch  # feat: [batch_size, seq_len, 6, frames], targ: [batch_size, seq_len, 3]
-    )
+    feat, targ, _, motion_type, platform_feat = _unpack_batch(batch)
 
     if epoch <= start_cov_epochs:  # Before covariance prediction
-        pred_multi_head = model(feat, motion_type)  # Use motion_type for optimization
+        pred_multi_head = model(
+            feat, motion_type, platform_x=platform_feat
+        )  # Use motion_type for optimization
+        platform_aux = _pop_platform_aux(pred_multi_head)
         pred_multi_cov = {}
         for key, value in pred_multi_head.items():
             if isinstance(value, torch.Tensor):
                 pred_multi_cov[key] = torch.zeros_like(value)
     else:  # Predict covariance
         logging.info("Starting covariance prediction training")
-        pred_multi_head, pred_multi_cov = model(feat, motion_type, predict_cov=True)
+        pred_multi_head, pred_multi_cov = model(
+            feat, motion_type, predict_cov=True, platform_x=platform_feat
+        )
+        platform_aux = _pop_platform_aux(pred_multi_head)
 
     motion_types = {1: "car", 2: "dog", 3: "drone", 4: "human"}
     multi_head_mask = {}
@@ -80,6 +123,9 @@ def fun_train_forward(cfg, model, batch, start_cov_epochs, epoch):
         start_cov_epochs,
         cfg["data"]["use_local_coord"],
     )
+    loss = _add_platform_classification_loss(
+        cfg, loss, platform_aux.get("_platform_logits"), motion_type
+    )
 
     last_key = None
     for key in list(pred_multi_head.keys()):
@@ -98,17 +144,20 @@ def fun_train_forward_efficient(cfg, model, batch, start_cov_epochs, epoch):
     """
     Efficient training forward pass that only computes needed heads.
     """
-    feat, targ, _, motion_type = batch
+    feat, targ, _, motion_type, platform_feat = _unpack_batch(batch)
 
     needed_heads = get_active_heads(cfg, motion_type)
 
     if epoch <= start_cov_epochs:
         # Only compute predictions for needed heads
-        outputs = model(feat, motion_type, compute_all_heads=False)
+        outputs = model(
+            feat, motion_type, compute_all_heads=False, platform_x=platform_feat
+        )
         if isinstance(outputs, dict):
             pred_multi_head = outputs
         else:
             pred_multi_head = {"human": outputs}  # Fallback
+        platform_aux = _pop_platform_aux(pred_multi_head)
             
         pred_multi_cov = {}
         for key in list(pred_multi_head.keys()):
@@ -120,12 +169,17 @@ def fun_train_forward_efficient(cfg, model, batch, start_cov_epochs, epoch):
                 pred_multi_head.pop(key)
     else:
         outputs, pred_multi_cov = model(
-            feat, motion_type, predict_cov=True, compute_all_heads=False
+            feat,
+            motion_type,
+            predict_cov=True,
+            compute_all_heads=False,
+            platform_x=platform_feat,
         )
         if isinstance(outputs, dict):
             pred_multi_head = outputs
         else:
             pred_multi_head = {"human": outputs}
+        platform_aux = _pop_platform_aux(pred_multi_head)
             
         # Clean up non-tensor auxiliary data
         for key in list(pred_multi_head.keys()):
@@ -168,6 +222,9 @@ def fun_train_forward_efficient(cfg, model, batch, start_cov_epochs, epoch):
         start_cov_epochs,
         cfg["data"]["use_local_coord"],
     )
+    loss = _add_platform_classification_loss(
+        cfg, loss, platform_aux.get("_platform_logits"), motion_type
+    )
 
     last_key = None
     for key in list(pred_multi_head.keys()):
@@ -208,6 +265,20 @@ def get_active_heads(cfg, motion_type):
     return get_needed_heads_from_motion_type(motion_type)
 
 
+def _select_motion_dynamic(cfg, fallback_motion_name, platform_logits):
+    pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
+    if platform_logits is None or not pcfg.get("route_by_prediction", False):
+        return fallback_motion_name
+    motion_types = {0: "car", 1: "dog", 2: "drone", 3: "human"}
+    predicted = torch.argmax(platform_logits.detach(), dim=-1).reshape(-1)
+    if predicted.numel() == 0:
+        return fallback_motion_name
+    counts = torch.bincount(
+        predicted.cpu(), minlength=int(pcfg.get("num_platforms", 4))
+    )
+    return motion_types.get(int(torch.argmax(counts).item()), fallback_motion_name)
+
+
 def fun_test_forward(cfg, model, batch, start_cov_epochs, epoch, past_kv=None, time_offset=0):
     """
     Testing forward pass with proper motion type handling and KV-cache support.
@@ -224,7 +295,7 @@ def fun_test_forward(cfg, model, batch, start_cov_epochs, epoch, past_kv=None, t
     Returns:
         tuple: (predictions, covariances, targets, orientations, loss, present_kv)
     """
-    feat, targ, orien, motion_type = batch
+    feat, targ, orien, motion_type, platform_feat = _unpack_batch(batch)
 
     # Determine the most common motion type in the batch
     frequency = Counter(motion_type.tolist())
@@ -245,8 +316,12 @@ def fun_test_forward(cfg, model, batch, start_cov_epochs, epoch, past_kv=None, t
             pred_multi_head = outputs
             present_kv = outputs.get("present_kv", None)
         else:
-            pred_multi_head = model(feat, motion_type)
+            pred_multi_head = model(feat, motion_type, platform_x=platform_feat)
             present_kv = None
+        platform_aux = _pop_platform_aux(pred_multi_head)
+        motion_dynamic = _select_motion_dynamic(
+            cfg, motion_dynamic, platform_aux.get("_platform_logits")
+        )
             
         pred = pred_multi_head[motion_dynamic]
         pred_cov = torch.zeros_like(pred)
@@ -259,9 +334,13 @@ def fun_test_forward(cfg, model, batch, start_cov_epochs, epoch, past_kv=None, t
             present_kv = outputs.get("present_kv", None)
         else:
             pred_multi_head, pred_multi_cov = model(
-                feat, motion_type, predict_cov=True
+                feat, motion_type, predict_cov=True, platform_x=platform_feat
             )
             present_kv = None
+        platform_aux = _pop_platform_aux(pred_multi_head)
+        motion_dynamic = _select_motion_dynamic(
+            cfg, motion_dynamic, platform_aux.get("_platform_logits")
+        )
             
         pred = pred_multi_head[motion_dynamic]
         pred_cov = pred_multi_cov[motion_dynamic]

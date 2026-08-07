@@ -131,6 +131,9 @@ data:
   # Frequency Configuration
   imu_freq: 200.0                 # IMU frequency in Hz
   sample_freq: 40                 # Sampling frequency for training
+  low_pass_filter:
+    enabled: True
+    kernel_size: 5
   
   # Coordinate System Configuration
   use_local_coord: True           # Use local coordinate system (recommended for IMU)
@@ -166,4 +169,3 @@ finetune:
   # Loss Configuration
   use_simple_loss: True           # Use simple MSE loss instead of complex loss
   covariance_target: 0.1          # Target covariance value for simple loss
-

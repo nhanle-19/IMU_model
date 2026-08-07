@@ -29,6 +29,9 @@ data:
 
   imu_freq: 200.0
   sample_freq: 40
+  low_pass_filter:
+    enabled: True
+    kernel_size: 5
 
   gravity_alignment:
     enabled: False

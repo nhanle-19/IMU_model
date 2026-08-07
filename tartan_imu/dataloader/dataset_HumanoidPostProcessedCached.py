@@ -15,7 +15,10 @@ import numpy as np
 import yaml
 from torch.utils.data import Dataset
 
-from tartan_imu.dataloader.dataset_HumanoidPostProcessed import HumanoidPostProcessedSequence
+from tartan_imu.dataloader.dataset_HumanoidPostProcessed import (
+    HumanoidPostProcessedSequence,
+    _moving_average_lowpass,
+)
 
 
 @dataclass(frozen=True)
@@ -270,6 +273,13 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
         self.gravity_noise_theta_range = cfg["augment"]["gravity_noise_theta_range"]
         self.feat_acc_sigma = cfg["augment"]["feat_acc_sigma"]
         self.feat_gyr_sigma = cfg["augment"]["feat_gyr_sigma"]
+        pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
+        lp_cfg = cfg["data"].get("low_pass_filter", {})
+        self.return_platform_windows = bool(pcfg.get("enabled", False))
+        self.low_pass_before_downsample = bool(
+            lp_cfg.get("enabled", self.return_platform_windows)
+        )
+        self.low_pass_kernel_size = int(lp_cfg.get("kernel_size", self.step_size))
 
         self.mode = kwargs.get("mode", "train")
         self.shuffle = self.mode in ["train", "val"]
@@ -281,6 +291,9 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
         )
         self.window_offsets = np.arange(
             0, self.window_total, self.step_size, dtype=np.int64
+        )
+        self.platform_window_offsets = np.arange(
+            0, self.window_total, dtype=np.int64
         )
         self.window_starts = (
             np.arange(self.seq_len, dtype=np.int64) * self.window_stride
@@ -378,16 +391,31 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
             feat = feat_aug
             targ = targ_aug
 
+        velocity_feat_source = (
+            _moving_average_lowpass(feat, self.low_pass_kernel_size)
+            if self.low_pass_before_downsample
+            else feat
+        )
         # Vectorized window extraction removes per-step Python-loop overhead.
         sample_indices = self.window_starts[:, None] + self.window_offsets[None, :]
-        seq_feat = feat[sample_indices]
+        seq_feat = velocity_feat_source[sample_indices]
         seq_feat = np.transpose(seq_feat, (0, 2, 1)).astype(np.float32, copy=False)
-        return (
+        batch = (
             seq_feat,
             targ.astype(np.float32),
             ori.astype(np.float32),
             label,
         )
+        if self.return_platform_windows:
+            platform_indices = (
+                self.window_starts[:, None] + self.platform_window_offsets[None, :]
+            )
+            platform_feat = feat[platform_indices]
+            platform_feat = np.transpose(platform_feat, (0, 2, 1)).astype(
+                np.float32, copy=False
+            )
+            batch = batch + (platform_feat,)
+        return batch
 
     def __len__(self):
         return len(self.index_map)

@@ -19,6 +19,24 @@ from tartan_imu.dataloader._common import (
 from tartan_imu.utils.constants import GRAVITY
 
 
+def _moving_average_lowpass(feat: np.ndarray, kernel_size: int) -> np.ndarray:
+    """Apply a simple edge-padded moving average along the time axis."""
+    kernel_size = int(kernel_size)
+    if kernel_size <= 1:
+        return feat
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    pad = kernel_size // 2
+    padded = np.pad(feat, ((pad, pad), (0, 0)), mode="edge")
+    kernel = np.ones(kernel_size, dtype=np.float32) / float(kernel_size)
+    filtered = np.empty_like(feat, dtype=np.float32)
+    for channel in range(feat.shape[1]):
+        filtered[:, channel] = np.convolve(
+            padded[:, channel], kernel, mode="valid"
+        )
+    return filtered
+
+
 class AirLabNPZSequence(object):
     def __init__(
         self,
@@ -379,6 +397,13 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
         self.feat_acc_sigma = cfg["augment"]["feat_acc_sigma"]  # 0.0001
         self.feat_gyr_sigma = cfg["augment"]["feat_gyr_sigma"]  # 1e-05
         self.use_local_coord = cfg["data"]["use_local_coord"]
+        pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
+        lp_cfg = cfg["data"].get("low_pass_filter", {})
+        self.return_platform_windows = bool(pcfg.get("enabled", False))
+        self.low_pass_before_downsample = bool(
+            lp_cfg.get("enabled", self.return_platform_windows)
+        )
+        self.low_pass_kernel_size = int(lp_cfg.get("kernel_size", self.step_size))
 
         # Time-scaling invariance settings
         self.add_time_scaling = cfg["augment"].get("add_time_scaling", False)
@@ -565,14 +590,26 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
             feat = feat_aug
             targ = targ_aug
 
+        velocity_feat_source = (
+            _moving_average_lowpass(feat, self.low_pass_kernel_size)
+            if self.low_pass_before_downsample
+            else feat
+        )
         seq_feat = []
+        platform_seq_feat = []
         for i in range(self.seq_len):  # 0-9
-            window_feat = feat[
+            raw_window_feat = feat[
                 i * self.window_size : self.past_data_size
                 + (i + 1) * self.window_size
                 + self.future_data_size,
                 :,
             ]  # Extract window: [window_size, F]
+            window_feat = velocity_feat_source[
+                i * self.window_size : self.past_data_size
+                + (i + 1) * self.window_size
+                + self.future_data_size,
+                :,
+            ]
             
             # Apply downsampling using step_size
             # step_size = imu_freq / sample_freq (e.g., 200/20 = 10)
@@ -581,6 +618,8 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
                 window_feat = window_feat[::self.step_size, :]  # [window_size/step_size, F]
             
             seq_feat.append(window_feat.T)  # Transpose to [F, downsampled_window_size]
+            if self.return_platform_windows:
+                platform_seq_feat.append(raw_window_feat.T)
             # Divide feat into ten segments, after downsampling: 0-20, 20-40, etc. (at 20Hz)
 
         # if isinstance(seq_feat, list):
@@ -593,12 +632,15 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
 
         #
 
-        return (
+        batch = (
             seq_feat.astype(np.float32),
             targ.astype(np.float32),
             ori.astype(np.float32),
             label,
         )  # 10*6*100  10*3
+        if self.return_platform_windows:
+            batch = batch + (np.array(platform_seq_feat).astype(np.float32),)
+        return batch
 
     def __len__(self):
         return len(self.index_map)

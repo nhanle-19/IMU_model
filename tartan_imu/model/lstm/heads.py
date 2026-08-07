@@ -9,10 +9,28 @@ optional covariance) prediction. ``FoundationModel`` runs a trunk once and
 dispatches its features to the relevant heads (all heads, or only those present
 in the batch's motion types).
 """
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tartan_imu.model.common.blocks import FcBlock
+from tartan_imu.model.lstm.trunks import ResNetLSTMSeqNet
+
+
+def _platform_conditioning_cfg(cfg):
+    return cfg.get("model_param", {}).get("platform_conditioning", {})
+
+
+def _platform_condition_dim(cfg) -> int:
+    pcfg = _platform_conditioning_cfg(cfg)
+    if not pcfg.get("enabled", False):
+        return 0
+    mode = pcfg.get("condition_mode", "latent")
+    if mode == "latent":
+        return int(pcfg.get("latent_dim", 16))
+    return int(pcfg.get("num_platforms", 4))
 
 
 class OutputHead(nn.Module):
@@ -32,26 +50,27 @@ class OutputHead(nn.Module):
         super(OutputHead, self).__init__()
 
         self.lstm_size = cfg["model_param"]["lstm_size"]  # 256
+        self.input_size = self.lstm_size + _platform_condition_dim(cfg)
         self.lstm_dropout = cfg["model_param"]["lstm_dropout"]  # 0.0
         self.output_dim = cfg["model_param"]["output_dim"]  # 3
         self.drop_ratio = cfg["model_param"]["drop_ratio"]  # 0.5 original:0.2
         self.split_z = cfg["model_param"]["split_z"]  # True/False
         # Output module
         self.output_block1 = FcBlock(
-            self.lstm_size, self.output_dim, dropout=self.drop_ratio, cfg=cfg
+            self.input_size, self.output_dim, dropout=self.drop_ratio, cfg=cfg
         )
         self.output_block2 = FcBlock(
-            self.lstm_size, self.output_dim, dropout=self.drop_ratio, cfg=cfg
+            self.input_size, self.output_dim, dropout=self.drop_ratio, cfg=cfg
         )
         if self.split_z:
             self.output_block1 = FcBlock(
-                self.lstm_size, self.output_dim - 1, dropout=self.drop_ratio, cfg=cfg
+                self.input_size, self.output_dim - 1, dropout=self.drop_ratio, cfg=cfg
             )  # dp mean
             self.output_block2 = FcBlock(
-                self.lstm_size, self.output_dim, dropout=self.drop_ratio, cfg=cfg
+                self.input_size, self.output_dim, dropout=self.drop_ratio, cfg=cfg
             )  # dp cov
             self.output_block1_z = FcBlock(
-                self.lstm_size, 1, dropout=self.drop_ratio, cfg=cfg
+                self.input_size, 1, dropout=self.drop_ratio, cfg=cfg
             )  # dp cov
         self.motion_type = motion_type
 
@@ -106,8 +125,44 @@ class FoundationModel(nn.Module):
         self.lstm_dropout = cfg["model_param"]["lstm_dropout"]  # 0.0
         self.output_dim = cfg["model_param"]["output_dim"]  # 3
         self.drop_ratio = cfg["model_param"]["drop_ratio"]  # 0.5 original:0.2
+        self.platform_cfg = _platform_conditioning_cfg(cfg)
+        self.use_platform_conditioning = self.platform_cfg.get("enabled", False)
+        self.num_platforms = int(self.platform_cfg.get("num_platforms", 4))
+        self.platform_condition_mode = self.platform_cfg.get("condition_mode", "latent")
+        self.platform_condition_dim = _platform_condition_dim(cfg)
 
-    def forward(self, x, motion_type=None, predict_cov=False, compute_all_heads=True):
+        if self.use_platform_conditioning:
+            platform_encoder_cfg = deepcopy(cfg)
+            classifier_sample_freq = float(
+                self.platform_cfg.get(
+                    "classifier_sample_freq", cfg["data"]["imu_freq"]
+                )
+            )
+            platform_encoder_cfg["data"]["sample_freq"] = classifier_sample_freq
+            self.platform_encoder = ResNetLSTMSeqNet(platform_encoder_cfg)
+            self.platform_classifier = nn.Linear(self.lstm_size, self.num_platforms)
+            if self.platform_condition_mode == "latent":
+                self.platform_condition_proj = nn.Sequential(
+                    nn.Linear(self.lstm_size, self.platform_condition_dim),
+                    nn.ReLU(inplace=True),
+                )
+            else:
+                self.platform_condition_proj = None
+            self.platform_window_frames = int(
+                cfg["model_param"]["window_time"] * classifier_sample_freq
+            )
+            self.platform_hard_eval = bool(
+                self.platform_cfg.get("hard_index_at_eval", False)
+            )
+
+    def forward(
+        self,
+        x,
+        motion_type=None,
+        predict_cov=False,
+        compute_all_heads=True,
+        platform_x=None,
+    ):
         """
         Forward pass with optional efficient computation.
 
@@ -127,16 +182,83 @@ class FoundationModel(nn.Module):
         if isinstance(model_output, tuple):
             model_output = model_output[0]  # Take the first element (output tensor)
 
+        platform_aux = {}
+        if self.use_platform_conditioning:
+            has_raw_platform_windows = platform_x is not None
+            condition, platform_aux = self._compute_platform_condition(x, platform_x)
+            if not has_raw_platform_windows and not self.platform_cfg.get(
+                "emit_aux_for_fallback", False
+            ):
+                platform_aux = {}
+            model_output = torch.cat((model_output, condition), dim=1)
+
         if compute_all_heads:
             # Original behavior - compute all heads
-            return self._compute_all_heads(
+            outputs = self._compute_all_heads(
                 model_output, batch_size, seq_len, predict_cov
             )
         else:
             # Efficient behavior - compute only needed heads
-            return self._compute_needed_heads(
+            outputs = self._compute_needed_heads(
                 model_output, batch_size, seq_len, predict_cov, motion_type
             )
+        return self._attach_platform_aux(outputs, platform_aux, predict_cov)
+
+    def _compute_platform_condition(self, velocity_x, platform_x):
+        """Predict platform from raw 200 Hz windows and build head conditioning."""
+        if platform_x is None:
+            platform_x = self._upsample_velocity_windows_for_platform(velocity_x)
+
+        batch_size = platform_x.size(0)
+        seq_len = platform_x.size(1)
+        platform_features = self.platform_encoder(platform_x)
+        if isinstance(platform_features, tuple):
+            platform_features = platform_features[0]
+
+        logits_flat = self.platform_classifier(platform_features)
+        logits = logits_flat.view(batch_size, seq_len, self.num_platforms)
+
+        if self.platform_condition_mode == "latent":
+            condition = self.platform_condition_proj(platform_features)
+        else:
+            probs = F.softmax(logits_flat, dim=-1)
+            if (
+                self.platform_condition_mode == "index"
+                and self.platform_hard_eval
+                and not self.training
+            ):
+                idx = torch.argmax(probs, dim=-1)
+                probs = F.one_hot(idx, num_classes=self.num_platforms).to(probs.dtype)
+            condition = probs
+
+        return condition, {
+            "_platform_logits": logits,
+            "_platform_probs": F.softmax(logits, dim=-1),
+        }
+
+    def _upsample_velocity_windows_for_platform(self, x):
+        """Compatibility fallback for callers that only provide 40 Hz windows."""
+        batch_size, seq_len, channels, frames = x.shape
+        flat = x.reshape(batch_size * seq_len, channels, frames)
+        upsampled = F.interpolate(
+            flat,
+            size=self.platform_window_frames,
+            mode="linear",
+            align_corners=False,
+        )
+        return upsampled.view(
+            batch_size, seq_len, channels, self.platform_window_frames
+        )
+
+    def _attach_platform_aux(self, outputs, platform_aux, predict_cov):
+        if not platform_aux:
+            return outputs
+        if predict_cov:
+            pred, cov = outputs
+            pred.update(platform_aux)
+            return pred, cov
+        outputs.update(platform_aux)
+        return outputs
 
     def _compute_all_heads(self, model_output, batch_size, seq_len, predict_cov):
         """Original implementation - compute all heads."""

@@ -16,6 +16,24 @@ DEFAULT_META_IMU_NAMES = ("livox", "pelvis", "torso")
 PELVIS_IMU_NAME = "pelvis"
 
 
+def _moving_average_lowpass(feat: np.ndarray, kernel_size: int) -> np.ndarray:
+    """Apply a simple edge-padded moving average along the time axis."""
+    kernel_size = int(kernel_size)
+    if kernel_size <= 1:
+        return feat
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    pad = kernel_size // 2
+    padded = np.pad(feat, ((pad, pad), (0, 0)), mode="edge")
+    kernel = np.ones(kernel_size, dtype=np.float32) / float(kernel_size)
+    filtered = np.empty_like(feat, dtype=np.float32)
+    for channel in range(feat.shape[1]):
+        filtered[:, channel] = np.convolve(
+            padded[:, channel], kernel, mode="valid"
+        )
+    return filtered
+
+
 def _squeeze_batch_axis(array: np.ndarray, expected_ndim: int, name: str) -> np.ndarray:
     """Convert [1, ...] array to [...] and validate rank."""
     arr = np.asarray(array)
@@ -467,6 +485,13 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
         self.feat_gyr_sigma = cfg["augment"]["feat_gyr_sigma"]
         self.use_local_coord = cfg["data"]["use_local_coord"]
         self.is_transformer = basic_data.is_transformer
+        pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
+        lp_cfg = cfg["data"].get("low_pass_filter", {})
+        self.return_platform_windows = bool(pcfg.get("enabled", False))
+        self.low_pass_before_downsample = bool(
+            lp_cfg.get("enabled", self.return_platform_windows)
+        )
+        self.low_pass_kernel_size = int(lp_cfg.get("kernel_size", self.step_size))
 
         self.mode = kwargs.get("mode", "train")
         self.shuffle, self.transform, self.gauss = False, False, False
@@ -484,6 +509,9 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
         )
         self.window_offsets = np.arange(
             0, self.window_total, self.step_size, dtype=np.int64
+        )
+        self.platform_window_offsets = np.arange(
+            0, self.window_total, dtype=np.int64
         )
         self.window_starts = (
             np.arange(self.seq_len, dtype=np.int64) * self.window_stride
@@ -581,15 +609,28 @@ class ResNetLSTMSeqToSeqDataset(Dataset):
             feat = feat_aug
             targ = targ_aug
 
+        velocity_feat_source = (
+            _moving_average_lowpass(feat, self.low_pass_kernel_size)
+            if self.low_pass_before_downsample
+            else feat
+        )
         sample_indices = self.window_starts[:, None] + self.window_offsets[None, :]
-        seq_feat = feat[sample_indices]
+        seq_feat = velocity_feat_source[sample_indices]
         seq_feat = np.transpose(seq_feat, (0, 2, 1))
-        return (
+        batch = (
             seq_feat.astype(np.float32),
             targ.astype(np.float32),
             ori.astype(np.float32),
             label,
         )
+        if self.return_platform_windows:
+            platform_indices = (
+                self.window_starts[:, None] + self.platform_window_offsets[None, :]
+            )
+            platform_feat = feat[platform_indices]
+            platform_feat = np.transpose(platform_feat, (0, 2, 1))
+            batch = batch + (platform_feat.astype(np.float32),)
+        return batch
 
     def __len__(self):
         return len(self.index_map)

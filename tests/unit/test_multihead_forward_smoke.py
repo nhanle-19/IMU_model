@@ -50,6 +50,13 @@ def _make_feat(cfg, n):
     return torch.randn(n, seq_len, channels, frames)
 
 
+def _make_platform_feat(cfg, n):
+    seq_len = cfg["train"]["seq_len"]
+    channels = cfg["model_param"]["input_dim"]
+    frames = int(cfg["model_param"]["window_time"] * cfg["data"]["imu_freq"])
+    return torch.randn(n, seq_len, channels, frames)
+
+
 def test_forward_all_heads_produces_four_heads():
     cfg, model = _build_model()
     x = _make_feat(cfg, 4)
@@ -57,6 +64,43 @@ def test_forward_all_heads_produces_four_heads():
     assert set(out.keys()) == {"car", "dog", "drone", "human"}, out.keys()
     for name, pred in out.items():
         assert torch.isfinite(pred).all(), f"{name} head produced non-finite output"
+
+
+def test_raw_platform_windows_train_classifier_conditioning():
+    cfg, model = _build_model()
+    seq_len = cfg["train"]["seq_len"]
+    output_dim = cfg["model_param"]["output_dim"]
+
+    motion_type = torch.tensor([_TYPE_ID[t] for t in ("car", "dog")])
+    feat = _make_feat(cfg, 2)
+    platform_feat = _make_platform_feat(cfg, 2)
+    targ = torch.randn(2, seq_len, output_dim)
+    aux = torch.zeros_like(targ)
+
+    out = model(
+        feat,
+        motion_type,
+        compute_all_heads=False,
+        platform_x=platform_feat,
+    )
+    assert "_platform_logits" in out
+    assert out["_platform_logits"].shape == (2, seq_len, 4)
+
+    model.train()
+    _, _, _, loss = fun_train_forward_efficient(
+        cfg,
+        model,
+        (feat, targ, aux, motion_type, platform_feat),
+        start_cov_epochs=180,
+        epoch=1,
+    )
+    loss.backward()
+
+    classifier_grad = any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.platform_classifier.parameters()
+    )
+    assert classifier_grad, "no gradient reached the platform classifier"
 
 
 def test_mixed_batch_trains_all_active_heads():
