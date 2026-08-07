@@ -12,6 +12,7 @@ from tqdm import tqdm
 from imu_velocity_diffusion.checkpoint import save_checkpoint
 from imu_velocity_diffusion.config import load_config
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
+from imu_velocity_diffusion.factory import build_diffusion_model
 from imu_velocity_diffusion.models import VelocityDiffusionModel
 from imu_velocity_diffusion.training import (
     batch_to_device,
@@ -20,16 +21,6 @@ from imu_velocity_diffusion.training import (
     output_dir,
     set_seed,
 )
-
-
-def build_model(cfg: dict, input_channels: int, device: torch.device) -> VelocityDiffusionModel:
-    model_cfg = cfg["model"]
-    return VelocityDiffusionModel(
-        input_channels=input_channels,
-        hidden_dim=int(model_cfg.get("hidden_dim", 128)),
-        time_dim=int(model_cfg.get("time_dim", 64)),
-        velocity_dim=int(model_cfg.get("velocity_dim", 3)),
-    ).to(device)
 
 
 def evaluate(
@@ -80,7 +71,7 @@ def main() -> None:
     val_loader = make_loader(cfg, "val", shuffle=False)
     input_channels = int(train_loader.dataset.input_channels)
 
-    model = build_model(cfg, input_channels, device)
+    model = build_diffusion_model(cfg, input_channels, device)
     schedule = DiffusionSchedule(**cfg["diffusion"], device=device)
     optimizer = torch.optim.AdamW(
         model.parameters(),

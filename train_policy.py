@@ -12,7 +12,8 @@ from tqdm import tqdm
 from imu_velocity_diffusion.checkpoint import load_checkpoint, save_checkpoint
 from imu_velocity_diffusion.config import load_config
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
-from imu_velocity_diffusion.models import VelocityDiffusionModel, VelocitySelector
+from imu_velocity_diffusion.factory import build_diffusion_model, build_selector_model
+from imu_velocity_diffusion.models import VelocityDiffusionModel
 from imu_velocity_diffusion.training import (
     batch_to_device,
     get_device,
@@ -20,18 +21,6 @@ from imu_velocity_diffusion.training import (
     output_dir,
     set_seed,
 )
-from train_diffusion import build_model as build_diffusion_model
-
-
-def build_selector(cfg: dict, input_channels: int, device: torch.device) -> VelocitySelector:
-    model_cfg = cfg["model"]
-    policy_cfg = cfg["policy"]
-    return VelocitySelector(
-        input_channels=input_channels,
-        hidden_dim=int(policy_cfg.get("hidden_dim", model_cfg.get("hidden_dim", 128))),
-        candidate_dim=int(policy_cfg.get("candidate_dim", 64)),
-        velocity_dim=int(model_cfg.get("velocity_dim", 3)),
-    ).to(device)
 
 
 def load_diffusion(
@@ -62,14 +51,19 @@ def make_candidates(
     num_candidates = int(cfg["policy"].get("num_candidates", 16))
     candidates = schedule.sample(diffusion, imu, num_candidates=num_candidates)
 
-    if cfg["policy"].get("include_noisy_target_candidate", False):
+    if cfg["policy"].get("bootstrap_with_target_candidate", False):
         std = float(cfg["policy"].get("target_candidate_std", 0.05))
         replacement = target_velocity + std * torch.randn_like(target_velocity)
         candidates[:, 0, :] = replacement
     return candidates
 
 
-def policy_loss(outputs: dict[str, torch.Tensor], candidates: torch.Tensor, target: torch.Tensor, cfg: dict):
+def policy_loss(
+    outputs: dict[str, torch.Tensor],
+    candidates: torch.Tensor,
+    target: torch.Tensor,
+    cfg: dict,
+):
     velocity_loss = F.mse_loss(outputs["velocity"], target)
     nearest = ((candidates - target[:, None, :]) ** 2).sum(dim=-1).argmin(dim=1)
     rank_loss = F.cross_entropy(outputs["logits"], nearest)
@@ -100,7 +94,12 @@ def evaluate(selector, diffusion, schedule, loader, cfg, device) -> dict[str, fl
             )
             outputs = selector(batch["imu"], candidates)
             mse = ((outputs["velocity"] - batch["velocity"]) ** 2).mean(dim=-1)
-            oracle_mse = ((candidates - batch["velocity"][:, None, :]) ** 2).mean(dim=-1).min(dim=1).values
+            oracle_mse = (
+                ((candidates - batch["velocity"][:, None, :]) ** 2)
+                .mean(dim=-1)
+                .min(dim=1)
+                .values
+            )
             total_mse += float(mse.sum().item())
             total_oracle_mse += float(oracle_mse.sum().item())
             total_count += int(mse.shape[0])
@@ -128,7 +127,7 @@ def main() -> None:
     diffusion, schedule = load_diffusion(
         args.diffusion_checkpoint, cfg, input_channels, device
     )
-    selector = build_selector(cfg, input_channels, device)
+    selector = build_selector_model(cfg, input_channels, device)
     optimizer = torch.optim.AdamW(
         selector.parameters(),
         lr=float(cfg["train"]["learning_rate"]),

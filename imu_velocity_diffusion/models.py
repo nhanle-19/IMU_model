@@ -40,7 +40,9 @@ class IMUEncoder(nn.Module):
             nn.SiLU(),
         )
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
-        self.proj = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, hidden_dim))
+        self.proj = nn.Sequential(
+            nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, hidden_dim)
+        )
 
     def forward(self, imu: torch.Tensor) -> torch.Tensor:
         x = self.net(imu)
@@ -129,11 +131,15 @@ class VelocitySelector(nn.Module):
             nn.Linear(hidden_dim, velocity_dim),
         )
 
-    def forward(self, imu: torch.Tensor, candidates: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(
+        self, imu: torch.Tensor, candidates: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
         """Return logits, corrected candidates, weights, and final velocity."""
         batch_size, num_candidates, velocity_dim = candidates.shape
         if velocity_dim != self.velocity_dim:
-            raise ValueError(f"Expected candidate dim {self.velocity_dim}, got {velocity_dim}")
+            raise ValueError(
+                f"Expected candidate dim {self.velocity_dim}, got {velocity_dim}"
+            )
 
         context = self.imu_encoder(imu)
         context = context[:, None, :].expand(batch_size, num_candidates, -1)

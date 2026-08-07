@@ -36,9 +36,9 @@ policy:
   candidate_dim: 64
   rank_loss_weight: 0.2
   residual_penalty_weight: 0.01
-  # Helpful when the diffusion model is still weak; set false for strict
-  # diffusion-only candidate training.
-  include_noisy_target_candidate: true
+  # Optional bootstrap mode for early experiments. Keep false for deployment-
+  # matching training where every policy candidate comes from diffusion.
+  bootstrap_with_target_candidate: false
   target_candidate_std: 0.05
 
 train:

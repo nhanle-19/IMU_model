@@ -17,7 +17,9 @@ class DiffusionSchedule:
     ):
         self.steps = int(steps)
         self.device = torch.device(device)
-        self.betas = torch.linspace(beta_start, beta_end, self.steps, device=self.device)
+        self.betas = torch.linspace(
+            beta_start, beta_end, self.steps, device=self.device
+        )
         self.alphas = 1.0 - self.betas
         self.alpha_bars = torch.cumprod(self.alphas, dim=0)
 
@@ -66,8 +68,7 @@ class DiffusionSchedule:
             alpha = self.alphas[step]
             alpha_bar = self.alpha_bars[step]
             x = (
-                x
-                - ((1.0 - alpha) / (1.0 - alpha_bar).sqrt()) * predicted_noise
+                x - ((1.0 - alpha) / (1.0 - alpha_bar).sqrt()) * predicted_noise
             ) / alpha.sqrt()
             if step > 0:
                 x = x + beta.sqrt() * torch.randn_like(x)

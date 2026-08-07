@@ -11,9 +11,8 @@ import torch
 from imu_velocity_diffusion.checkpoint import load_checkpoint
 from imu_velocity_diffusion.config import load_config
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
-from imu_velocity_diffusion.models import VelocitySelector
+from imu_velocity_diffusion.factory import build_diffusion_model, build_selector_model
 from imu_velocity_diffusion.training import get_device
-from train_diffusion import build_model as build_diffusion_model
 
 
 def load_imu_windows(cfg: dict, input_npz: str) -> tuple[torch.Tensor, np.ndarray]:
@@ -61,14 +60,7 @@ def main() -> None:
 
     policy_ckpt = load_checkpoint(args.policy_checkpoint, device)
     policy_cfg = policy_ckpt.get("cfg", cfg)
-    selector = VelocitySelector(
-        input_channels=input_channels,
-        hidden_dim=int(
-            policy_cfg["policy"].get("hidden_dim", policy_cfg["model"].get("hidden_dim", 128))
-        ),
-        candidate_dim=int(policy_cfg["policy"].get("candidate_dim", 64)),
-        velocity_dim=int(policy_cfg["model"].get("velocity_dim", 3)),
-    ).to(device)
+    selector = build_selector_model(policy_cfg, input_channels, device)
     selector.load_state_dict(policy_ckpt["model_state_dict"])
     selector.eval()
 

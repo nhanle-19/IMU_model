@@ -81,8 +81,8 @@ IMU window + [K, 3] candidate velocities
 ```
 
 The policy loss combines final velocity MSE, a ranking loss toward the closest
-candidate, and a small residual penalty so the selector does not ignore the
-candidate set.
+diffusion candidate, and a small residual penalty so the selector does not
+ignore the candidate set.
 
 ## 3. Run Deployment Inference
 
