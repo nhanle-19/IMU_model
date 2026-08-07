@@ -1,0 +1,55 @@
+seed: 42
+
+data:
+  # Set synthetic: false and root: /path/to/dataset when real data is ready.
+  synthetic: true
+  root: ./data
+  split_dirs:
+    train: train
+    val: val
+    test: test
+  file_glob: "*.npz"
+  imu_key: imu
+  velocity_key: velocity
+  imu_columns:
+  velocity_columns:
+  input_channels: 6
+  window_size: 64
+  stride: 8
+  target_at: end
+  train_synthetic_size: 128
+  val_synthetic_size: 32
+
+model:
+  velocity_dim: 3
+  hidden_dim: 128
+  time_dim: 64
+
+diffusion:
+  steps: 10
+  beta_start: 0.0001
+  beta_end: 0.02
+
+policy:
+  num_candidates: 4
+  hidden_dim: 128
+  candidate_dim: 64
+  rank_loss_weight: 0.2
+  residual_penalty_weight: 0.01
+  # Helpful when the diffusion model is still weak; set false for strict
+  # diffusion-only candidate training.
+  include_noisy_target_candidate: true
+  target_candidate_std: 0.05
+
+train:
+  out_dir: ./runs/velocity_diffusion
+  batch_size: 32
+  epochs: 2
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  num_workers: 0
+  drop_last: false
+
+inference:
+  batch_size: 256
