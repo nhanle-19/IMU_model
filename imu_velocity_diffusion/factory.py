@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import torch
 
-from imu_velocity_diffusion.models import VelocityDiffusionModel, VelocitySelector
+from imu_velocity_diffusion.models import (
+    VelocityDiffusionModel,
+    VelocityDistributionRefiner,
+)
 
 
 def build_diffusion_model(
@@ -19,12 +22,12 @@ def build_diffusion_model(
     ).to(device)
 
 
-def build_selector_model(
+def build_refiner_model(
     cfg: dict, input_channels: int, device: torch.device
-) -> VelocitySelector:
+) -> VelocityDistributionRefiner:
     model_cfg = cfg["model"]
     policy_cfg = cfg["policy"]
-    return VelocitySelector(
+    return VelocityDistributionRefiner(
         input_channels=input_channels,
         hidden_dim=int(policy_cfg.get("hidden_dim", model_cfg.get("hidden_dim", 128))),
         candidate_dim=int(policy_cfg.get("candidate_dim", 64)),

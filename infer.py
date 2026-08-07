@@ -11,7 +11,7 @@ import torch
 from imu_velocity_diffusion.checkpoint import load_checkpoint
 from imu_velocity_diffusion.config import load_config
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
-from imu_velocity_diffusion.factory import build_diffusion_model, build_selector_model
+from imu_velocity_diffusion.factory import build_diffusion_model, build_refiner_model
 from imu_velocity_diffusion.training import get_device
 
 
@@ -39,7 +39,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--diffusion-checkpoint", required=True)
-    parser.add_argument("--policy-checkpoint", required=True)
+    parser.add_argument("--refiner-checkpoint", required=True)
     parser.add_argument("--input-npz", required=True)
     parser.add_argument("--output-npz", required=True)
     parser.add_argument("--num-candidates", type=int, default=None)
@@ -58,11 +58,11 @@ def main() -> None:
     diffusion.eval()
     schedule = DiffusionSchedule(**diffusion_cfg["diffusion"], device=device)
 
-    policy_ckpt = load_checkpoint(args.policy_checkpoint, device)
+    policy_ckpt = load_checkpoint(args.refiner_checkpoint, device)
     policy_cfg = policy_ckpt.get("cfg", cfg)
-    selector = build_selector_model(policy_cfg, input_channels, device)
-    selector.load_state_dict(policy_ckpt["model_state_dict"])
-    selector.eval()
+    refiner = build_refiner_model(policy_cfg, input_channels, device)
+    refiner.load_state_dict(policy_ckpt["model_state_dict"])
+    refiner.eval()
 
     batch_size = int(cfg.get("inference", {}).get("batch_size", 256))
     num_candidates = args.num_candidates or int(cfg["policy"].get("num_candidates", 16))
@@ -71,7 +71,7 @@ def main() -> None:
         for start in range(0, len(windows), batch_size):
             imu = windows[start : start + batch_size].to(device)
             candidates = schedule.sample(diffusion, imu, num_candidates=num_candidates)
-            outputs = selector(imu, candidates)
+            outputs = refiner(imu, candidates)
             all_candidates.append(candidates.cpu().numpy())
             all_weights.append(outputs["weights"].cpu().numpy())
             all_velocity.append(outputs["velocity"].cpu().numpy())
@@ -82,7 +82,7 @@ def main() -> None:
         window_starts=starts,
         candidate_velocities=np.concatenate(all_candidates, axis=0),
         candidate_weights=np.concatenate(all_weights, axis=0),
-        selected_velocity=np.concatenate(all_velocity, axis=0),
+        refined_velocity=np.concatenate(all_velocity, axis=0),
     )
     print(f"wrote {args.output_npz}")
 

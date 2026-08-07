@@ -34,8 +34,8 @@ policy:
   num_candidates: 4
   hidden_dim: 128
   candidate_dim: 64
-  rank_loss_weight: 0.2
   residual_penalty_weight: 0.01
+  attention_entropy_weight: 0.0
   # Optional bootstrap mode for early experiments. Keep false for deployment-
   # matching training where every policy candidate comes from diffusion.
   bootstrap_with_target_candidate: false

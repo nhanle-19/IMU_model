@@ -1,4 +1,4 @@
-"""Neural modules for velocity candidate generation and candidate selection."""
+"""Neural modules for velocity candidate generation and distribution refinement."""
 
 from __future__ import annotations
 
@@ -96,8 +96,15 @@ class VelocityDiffusionModel(nn.Module):
         return self.denoiser(torch.cat([context, t_embed, v_embed], dim=-1))
 
 
-class VelocitySelector(nn.Module):
-    """Select or blend velocity candidates using the same IMU window."""
+class VelocityDistributionRefiner(nn.Module):
+    """Refine a sampled velocity distribution into one usable estimate.
+
+    The diffusion model produces a set of candidate velocities. This module does
+    not treat that set as a menu where exactly one candidate must be selected.
+    It consumes both per-sample candidates and global sample statistics
+    (mean/variance/range) so it can aggregate unimodal distributions, preserve
+    uncertainty cues, and use IMU context to reject inconsistent samples.
+    """
 
     def __init__(
         self,
@@ -111,48 +118,104 @@ class VelocitySelector(nn.Module):
         self.hidden_dim = hidden_dim
         self.velocity_dim = velocity_dim
         self.imu_encoder = IMUEncoder(input_channels, hidden_dim)
+        stats_dim = velocity_dim * 4
+        self.stats_encoder = nn.Sequential(
+            nn.Linear(stats_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
         self.candidate_encoder = nn.Sequential(
-            nn.Linear(velocity_dim, candidate_dim),
+            nn.Linear(velocity_dim * 3, candidate_dim),
             nn.SiLU(),
             nn.Linear(candidate_dim, candidate_dim),
             nn.SiLU(),
         )
-        fused_dim = hidden_dim + candidate_dim
-        self.score_head = nn.Sequential(
+        fused_dim = hidden_dim * 2 + candidate_dim
+        self.attention_head = nn.Sequential(
             nn.LayerNorm(fused_dim),
             nn.Linear(fused_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, 1),
         )
-        self.residual_head = nn.Sequential(
+        self.candidate_refine_head = nn.Sequential(
             nn.LayerNorm(fused_dim),
             nn.Linear(fused_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, velocity_dim),
         )
+        self.global_refine_head = nn.Sequential(
+            nn.LayerNorm(hidden_dim * 2 + velocity_dim * 2),
+            nn.Linear(hidden_dim * 2 + velocity_dim * 2, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, velocity_dim),
+        )
+
+    def _distribution_stats(self, candidates: torch.Tensor) -> dict[str, torch.Tensor]:
+        mean = candidates.mean(dim=1)
+        variance = candidates.var(dim=1, unbiased=False)
+        minimum = candidates.min(dim=1).values
+        maximum = candidates.max(dim=1).values
+        return {
+            "mean": mean,
+            "variance": variance,
+            "minimum": minimum,
+            "maximum": maximum,
+        }
 
     def forward(
         self, imu: torch.Tensor, candidates: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        """Return logits, corrected candidates, weights, and final velocity."""
+        """Return distribution statistics, aggregation weights, and velocity."""
         batch_size, num_candidates, velocity_dim = candidates.shape
         if velocity_dim != self.velocity_dim:
             raise ValueError(
                 f"Expected candidate dim {self.velocity_dim}, got {velocity_dim}"
             )
 
-        context = self.imu_encoder(imu)
-        context = context[:, None, :].expand(batch_size, num_candidates, -1)
-        cand_embed = self.candidate_encoder(candidates)
-        fused = torch.cat([context, cand_embed], dim=-1)
-        logits = self.score_head(fused).squeeze(-1)
-        residual = self.residual_head(fused)
-        corrected = candidates + residual
+        stats = self._distribution_stats(candidates)
+        distribution_features = torch.cat(
+            [stats["mean"], stats["variance"], stats["minimum"], stats["maximum"]],
+            dim=-1,
+        )
+        imu_context = self.imu_encoder(imu)
+        stats_context = self.stats_encoder(distribution_features)
+
+        centered = candidates - stats["mean"][:, None, :]
+        normalized = centered / torch.sqrt(stats["variance"][:, None, :] + 1e-6)
+        candidate_features = torch.cat([candidates, centered, normalized], dim=-1)
+        candidate_context = self.candidate_encoder(candidate_features)
+
+        imu_context_expanded = imu_context[:, None, :].expand(
+            batch_size, num_candidates, -1
+        )
+        stats_context_expanded = stats_context[:, None, :].expand(
+            batch_size, num_candidates, -1
+        )
+        fused = torch.cat(
+            [imu_context_expanded, stats_context_expanded, candidate_context], dim=-1
+        )
+        logits = self.attention_head(fused).squeeze(-1)
         weights = torch.softmax(logits, dim=-1)
-        velocity = torch.sum(weights.unsqueeze(-1) * corrected, dim=1)
+
+        candidate_delta = self.candidate_refine_head(fused)
+        corrected = candidates + candidate_delta
+        weighted_velocity = torch.sum(weights.unsqueeze(-1) * corrected, dim=1)
+        global_delta = self.global_refine_head(
+            torch.cat(
+                [imu_context, stats_context, stats["mean"], stats["variance"]],
+                dim=-1,
+            )
+        )
+        velocity = weighted_velocity + global_delta
         return {
             "logits": logits,
             "weights": weights,
             "corrected_candidates": corrected,
+            "distribution_mean": stats["mean"],
+            "distribution_variance": stats["variance"],
+            "distribution_minimum": stats["minimum"],
+            "distribution_maximum": stats["maximum"],
+            "weighted_velocity": weighted_velocity,
             "velocity": velocity,
         }

@@ -6,11 +6,14 @@ The deployed pipeline is:
 
 1. **Diffusion candidate generator**: samples multiple plausible base velocities
    from an IMU window.
-2. **Velocity selector policy**: uses the same IMU window plus those sampled
-   candidate velocities to select or lightly correct the final velocity.
+2. **Velocity distribution refiner**: uses the same IMU window plus the sampled
+   velocity distribution to produce one usable velocity estimate.
 
 The point is not to force the diffusion model to pick one answer. It proposes a
-set of velocity hypotheses, then the policy learns how to use that set.
+set of velocity hypotheses. The second network then aggregates and refines that
+sampled distribution: it can use the sample mean as the likely velocity, sample
+variance as uncertainty, multimodal structure as a cue that several motions are
+plausible, and IMU features to reject inconsistent samples.
 
 ## Data Format
 
@@ -58,7 +61,7 @@ runs/velocity_diffusion/diffusion_best.pt
 The validation metric `candidate_min_rmse` measures the oracle error of the
 closest sampled candidate.
 
-## 2. Train Selector Policy
+## 2. Train Distribution Refiner
 
 ```bash
 python train_policy.py \
@@ -69,20 +72,21 @@ python train_policy.py \
 Outputs:
 
 ```text
-runs/velocity_diffusion/policy_last.pt
-runs/velocity_diffusion/policy_best.pt
+runs/velocity_diffusion/refiner_last.pt
+runs/velocity_diffusion/refiner_best.pt
 ```
 
-During policy training, the diffusion model is frozen. It samples candidate
-velocities first, then the policy receives:
+During refiner training, the diffusion model is frozen. It samples candidate
+velocities first, then the refiner receives:
 
 ```text
-IMU window + [K, 3] candidate velocities
+IMU window + [K, 3] candidate velocities + sample statistics
 ```
 
-The policy loss combines final velocity MSE, a ranking loss toward the closest
-diffusion candidate, and a small residual penalty so the selector does not
-ignore the candidate set.
+The refiner uses sample mean, variance, min/max range, per-candidate normalized
+offsets, and IMU context. Its loss is final velocity MSE plus a small residual
+penalty, so the model learns to convert the distribution into one usable
+velocity estimate rather than merely picking a single candidate.
 
 ## 3. Run Deployment Inference
 
@@ -90,7 +94,7 @@ ignore the candidate set.
 python infer.py \
   --config configs/default.yaml \
   --diffusion-checkpoint runs/velocity_diffusion/diffusion_best.pt \
-  --policy-checkpoint runs/velocity_diffusion/policy_best.pt \
+  --refiner-checkpoint runs/velocity_diffusion/refiner_best.pt \
   --input-npz path/to/trajectory.npz \
   --output-npz runs/velocity_diffusion/predictions.npz
 ```
@@ -101,7 +105,7 @@ The output NPZ contains:
 window_starts
 candidate_velocities  [N, K, 3]
 candidate_weights     [N, K]
-selected_velocity     [N, 3]
+refined_velocity      [N, 3]
 ```
 
 ## Real Data Switch

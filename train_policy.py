@@ -1,4 +1,4 @@
-"""Train the IMU + diffusion-candidate velocity selector."""
+"""Train the IMU + diffusion-candidate velocity distribution refiner."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from tqdm import tqdm
 from imu_velocity_diffusion.checkpoint import load_checkpoint, save_checkpoint
 from imu_velocity_diffusion.config import load_config
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
-from imu_velocity_diffusion.factory import build_diffusion_model, build_selector_model
+from imu_velocity_diffusion.factory import build_diffusion_model, build_refiner_model
 from imu_velocity_diffusion.models import VelocityDiffusionModel
 from imu_velocity_diffusion.training import (
     batch_to_device,
@@ -58,31 +58,31 @@ def make_candidates(
     return candidates
 
 
-def policy_loss(
+def refiner_loss(
     outputs: dict[str, torch.Tensor],
     candidates: torch.Tensor,
     target: torch.Tensor,
     cfg: dict,
 ):
     velocity_loss = F.mse_loss(outputs["velocity"], target)
-    nearest = ((candidates - target[:, None, :]) ** 2).sum(dim=-1).argmin(dim=1)
-    rank_loss = F.cross_entropy(outputs["logits"], nearest)
     residual = outputs["corrected_candidates"] - candidates
     residual_penalty = residual.pow(2).mean()
+    weights = outputs["weights"].clamp_min(1e-8)
+    attention_entropy = -(weights * weights.log()).sum(dim=1).mean()
     total = (
         velocity_loss
-        + float(cfg["policy"].get("rank_loss_weight", 0.2)) * rank_loss
         + float(cfg["policy"].get("residual_penalty_weight", 0.01)) * residual_penalty
+        - float(cfg["policy"].get("attention_entropy_weight", 0.0)) * attention_entropy
     )
     return total, {
         "velocity_loss": float(velocity_loss.detach().item()),
-        "rank_loss": float(rank_loss.detach().item()),
         "residual_penalty": float(residual_penalty.detach().item()),
+        "attention_entropy": float(attention_entropy.detach().item()),
     }
 
 
-def evaluate(selector, diffusion, schedule, loader, cfg, device) -> dict[str, float]:
-    selector.eval()
+def evaluate(refiner, diffusion, schedule, loader, cfg, device) -> dict[str, float]:
+    refiner.eval()
     total_mse = 0.0
     total_oracle_mse = 0.0
     total_count = 0
@@ -92,7 +92,7 @@ def evaluate(selector, diffusion, schedule, loader, cfg, device) -> dict[str, fl
             candidates = make_candidates(
                 diffusion, schedule, batch["imu"], batch["velocity"], cfg
             )
-            outputs = selector(batch["imu"], candidates)
+            outputs = refiner(batch["imu"], candidates)
             mse = ((outputs["velocity"] - batch["velocity"]) ** 2).mean(dim=-1)
             oracle_mse = (
                 ((candidates - batch["velocity"][:, None, :]) ** 2)
@@ -127,9 +127,9 @@ def main() -> None:
     diffusion, schedule = load_diffusion(
         args.diffusion_checkpoint, cfg, input_channels, device
     )
-    selector = build_selector_model(cfg, input_channels, device)
+    refiner = build_refiner_model(cfg, input_channels, device)
     optimizer = torch.optim.AdamW(
-        selector.parameters(),
+        refiner.parameters(),
         lr=float(cfg["train"]["learning_rate"]),
         weight_decay=float(cfg["train"].get("weight_decay", 1e-4)),
     )
@@ -139,22 +139,22 @@ def main() -> None:
     epochs = int(cfg["train"]["epochs"])
 
     for epoch in range(1, epochs + 1):
-        selector.train()
+        refiner.train()
         total_loss = 0.0
         total_count = 0
-        progress = tqdm(train_loader, desc=f"policy epoch {epoch}/{epochs}")
+        progress = tqdm(train_loader, desc=f"refiner epoch {epoch}/{epochs}")
         for batch in progress:
             batch = batch_to_device(batch, device)
             candidates = make_candidates(
                 diffusion, schedule, batch["imu"], batch["velocity"], cfg
             )
-            outputs = selector(batch["imu"], candidates)
-            loss, loss_parts = policy_loss(outputs, candidates, batch["velocity"], cfg)
+            outputs = refiner(batch["imu"], candidates)
+            loss, loss_parts = refiner_loss(outputs, candidates, batch["velocity"], cfg)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
-                selector.parameters(), float(cfg["train"].get("grad_clip", 1.0))
+                refiner.parameters(), float(cfg["train"].get("grad_clip", 1.0))
             )
             optimizer.step()
 
@@ -163,7 +163,7 @@ def main() -> None:
             total_count += batch_size
             progress.set_postfix(loss=total_loss / max(total_count, 1), **loss_parts)
 
-        metrics = evaluate(selector, diffusion, schedule, val_loader, cfg, device)
+        metrics = evaluate(refiner, diffusion, schedule, val_loader, cfg, device)
         metrics["train_loss"] = total_loss / max(total_count, 1)
         print(
             f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "
@@ -172,8 +172,8 @@ def main() -> None:
         )
 
         save_checkpoint(
-            out_dir / "policy_last.pt",
-            model=selector,
+            out_dir / "refiner_last.pt",
+            model=refiner,
             optimizer=optimizer,
             epoch=epoch,
             cfg=cfg,
@@ -182,8 +182,8 @@ def main() -> None:
         if metrics["rmse"] < best_rmse:
             best_rmse = metrics["rmse"]
             save_checkpoint(
-                out_dir / "policy_best.pt",
-                model=selector,
+                out_dir / "refiner_best.pt",
+                model=refiner,
                 optimizer=optimizer,
                 epoch=epoch,
                 cfg=cfg,
