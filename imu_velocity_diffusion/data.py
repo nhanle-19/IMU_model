@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
+from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +14,11 @@ from torch.utils.data import Dataset
 
 
 @dataclass(frozen=True)
-class WindowIndex:
-    seq_id: int
-    start: int
+class SequenceMeta:
+    path: Path
+    length: int
+    input_channels: int
+    num_windows: int
 
 
 def _squeeze_optional_batch_axis(array: np.ndarray) -> np.ndarray:
@@ -37,6 +41,15 @@ def _select_columns(array: np.ndarray, columns: Iterable[int] | None) -> np.ndar
     return array[:, list(columns)]
 
 
+def _time_and_channels(array: np.ndarray) -> tuple[int, int]:
+    arr = np.asarray(array)
+    if arr.ndim >= 3 and arr.shape[0] == 1:
+        return int(arr.shape[1]), int(np.prod(arr.shape[2:]))
+    if arr.ndim < 2:
+        raise ValueError(f"Expected [T, C...] array, got shape {arr.shape}")
+    return int(arr.shape[0]), int(np.prod(arr.shape[1:]))
+
+
 class NPZVelocityWindowDataset(Dataset):
     """Sliding-window dataset over NPZ files.
 
@@ -57,6 +70,7 @@ class NPZVelocityWindowDataset(Dataset):
         self.velocity_key = str(data_cfg.get("velocity_key", "velocity"))
         self.imu_columns = data_cfg.get("imu_columns")
         self.velocity_columns = data_cfg.get("velocity_columns")
+        self.sequence_cache_size = int(data_cfg.get("sequence_cache_size", 2))
 
         split_dirs = data_cfg.get("split_dirs", {})
         split_name = split_dirs.get(split, split)
@@ -71,40 +85,52 @@ class NPZVelocityWindowDataset(Dataset):
         if not files:
             raise FileNotFoundError(f"No NPZ files found under {split_root}")
 
-        self.imu_sequences: list[np.ndarray] = []
-        self.velocity_sequences: list[np.ndarray] = []
-        self.index: list[WindowIndex] = []
+        self.sequences: list[SequenceMeta] = []
+        self.cumulative_windows: list[int] = []
+        self._array_cache: OrderedDict[int, tuple[np.ndarray, np.ndarray]] = (
+            OrderedDict()
+        )
 
         for file_path in files:
             with np.load(file_path, allow_pickle=True) as npz:
                 if self.imu_key not in npz or self.velocity_key not in npz:
                     continue
-                imu = _select_columns(
-                    _flatten_time_series(npz[self.imu_key]), self.imu_columns
-                )
-                vel = _select_columns(
-                    _flatten_time_series(npz[self.velocity_key]), self.velocity_columns
-                )
-            if vel.shape[1] != 3:
+                imu_len, imu_channels = _time_and_channels(npz[self.imu_key])
+                vel_len, vel_channels = _time_and_channels(npz[self.velocity_key])
+
+            if self.imu_columns is not None:
+                imu_channels = len(self.imu_columns)
+            if self.velocity_columns is not None:
+                vel_channels = len(self.velocity_columns)
+            if vel_channels != 3:
                 raise ValueError(
-                    f"{file_path}: velocity target must have 3 columns, got {vel.shape}"
+                    f"{file_path}: velocity target must have 3 columns, got "
+                    f"{vel_channels}"
                 )
-            length = min(len(imu), len(vel))
+            length = min(imu_len, vel_len)
             if length < self.window_size:
                 continue
-            seq_id = len(self.imu_sequences)
-            self.imu_sequences.append(imu[:length])
-            self.velocity_sequences.append(vel[:length])
-            for start in range(0, length - self.window_size + 1, self.stride):
-                self.index.append(WindowIndex(seq_id=seq_id, start=start))
+            num_windows = ((length - self.window_size) // self.stride) + 1
+            self.sequences.append(
+                SequenceMeta(
+                    path=file_path,
+                    length=length,
+                    input_channels=imu_channels,
+                    num_windows=num_windows,
+                )
+            )
+            total = num_windows
+            if self.cumulative_windows:
+                total += self.cumulative_windows[-1]
+            self.cumulative_windows.append(total)
 
-        if not self.index:
+        if not self.sequences:
             raise ValueError("No valid IMU windows were created from the dataset.")
 
-        self.input_channels = int(self.imu_sequences[0].shape[1])
+        self.input_channels = int(self.sequences[0].input_channels)
 
     def __len__(self) -> int:
-        return len(self.index)
+        return int(self.cumulative_windows[-1])
 
     def _target_velocity(self, velocity: np.ndarray, start: int) -> np.ndarray:
         end = start + self.window_size
@@ -116,10 +142,44 @@ class NPZVelocityWindowDataset(Dataset):
             raise ValueError("data.target_at must be one of: end, center, mean")
         return velocity[end - 1]
 
+    def _locate(self, item: int) -> tuple[int, int]:
+        if item < 0:
+            item += len(self)
+        if item < 0 or item >= len(self):
+            raise IndexError(item)
+        seq_id = bisect_right(self.cumulative_windows, item)
+        prev = 0 if seq_id == 0 else self.cumulative_windows[seq_id - 1]
+        local_window = item - prev
+        return seq_id, local_window * self.stride
+
+    def _load_sequence(self, seq_id: int) -> tuple[np.ndarray, np.ndarray]:
+        if seq_id in self._array_cache:
+            arrays = self._array_cache.pop(seq_id)
+            self._array_cache[seq_id] = arrays
+            return arrays
+
+        meta = self.sequences[seq_id]
+        with np.load(meta.path, allow_pickle=True) as npz:
+            imu = _select_columns(
+                _flatten_time_series(npz[self.imu_key]), self.imu_columns
+            )
+            velocity = _select_columns(
+                _flatten_time_series(npz[self.velocity_key]), self.velocity_columns
+            )
+        imu = imu[: meta.length]
+        velocity = velocity[: meta.length]
+
+        if self.sequence_cache_size > 0:
+            self._array_cache[seq_id] = (imu, velocity)
+            while len(self._array_cache) > self.sequence_cache_size:
+                self._array_cache.popitem(last=False)
+        return imu, velocity
+
     def __getitem__(self, item: int) -> dict[str, torch.Tensor]:
-        wi = self.index[item]
-        imu = self.imu_sequences[wi.seq_id][wi.start : wi.start + self.window_size]
-        vel = self._target_velocity(self.velocity_sequences[wi.seq_id], wi.start)
+        seq_id, start = self._locate(item)
+        imu_seq, velocity_seq = self._load_sequence(seq_id)
+        imu = imu_seq[start : start + self.window_size]
+        vel = self._target_velocity(velocity_seq, start)
         return {
             "imu": torch.from_numpy(imu.T.copy()),
             "velocity": torch.from_numpy(vel.astype(np.float32, copy=False)),

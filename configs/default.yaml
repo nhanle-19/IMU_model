@@ -1,8 +1,7 @@
 seed: 42
 
 data:
-  # Set synthetic: false and root: /path/to/dataset when real data is ready.
-  synthetic: true
+  synthetic: false
   root: ./data
   split_dirs:
     train: train
@@ -10,7 +9,7 @@ data:
     test: test
   file_glob: "*.npz"
   imu_key: imu
-  velocity_key: velocity
+  velocity_key: vel_body
   imu_columns:
   velocity_columns:
   input_channels: 6
@@ -31,7 +30,7 @@ diffusion:
   beta_end: 0.02
 
 policy:
-  num_candidates: 4
+  num_candidates: 32
   hidden_dim: 128
   candidate_dim: 64
   residual_penalty_weight: 0.01
