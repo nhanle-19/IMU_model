@@ -274,6 +274,176 @@ class ResNetLSTMSeqNet(nn.Module):
             return x1
 
 
+class SpectralPlatformLSTMEncoder(nn.Module):
+    """STFT + 2D CNN platform encoder feeding the existing platform LSTM shape."""
+
+    n_fft = 64
+    win_length = 64
+    hop_length = 16
+    center = False
+
+    def __init__(self, cfg):
+        super(SpectralPlatformLSTMEncoder, self).__init__()
+        data_window_config = dict(
+            [
+                (
+                    "past_data_size",
+                    int(cfg["model_param"]["past_time"] * cfg["data"]["imu_freq"]),
+                ),
+                (
+                    "window_size",
+                    int(cfg["model_param"]["window_time"] * cfg["data"]["imu_freq"]),
+                ),
+                (
+                    "future_data_size",
+                    int(cfg["model_param"]["future_time"] * cfg["data"]["imu_freq"]),
+                ),
+                (
+                    "step_size",
+                    int(cfg["data"]["imu_freq"] / cfg["data"]["sample_freq"]),
+                ),
+            ]
+        )
+        self.input_dim = cfg["model_param"]["input_dim"]
+        self.lstm_size = cfg["model_param"]["lstm_size"]
+        self.lstm_dropout = cfg["model_param"]["lstm_dropout"]
+        self.num_layers = cfg["model_param"]["lstm_layers"]
+        self.win_size = (
+            data_window_config["window_size"]
+            + data_window_config["past_data_size"]
+            + data_window_config["future_data_size"]
+        )
+
+        step_size = data_window_config.get("step_size", 1)
+        actual_win_size = self.win_size // step_size if step_size > 1 else self.win_size
+
+        self.num_direction = 1
+        self.res_net_out_channel = 128
+        self.resnet_code = self.res_net_out_channel * int(actual_win_size / 16 + 1)
+        self.freq_bins = self.n_fft // 2 + 1
+        self.stft_frames = (self.win_size - self.win_length) // self.hop_length + 1
+
+        self.register_buffer("hann_window", torch.hann_window(self.win_length))
+        self.spectral_cnn = nn.Sequential(
+            nn.Conv2d(self.input_dim, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, stride=(2, 1), padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(
+                64,
+                self.res_net_out_channel,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(self.res_net_out_channel),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((int(actual_win_size / 16 + 1), 1)),
+        )
+
+        self.lstm = nn.LSTM(
+            self.resnet_code,
+            self.lstm_size,
+            self.num_layers,
+            batch_first=True,
+            dropout=self.lstm_dropout,
+            bidirectional=False,
+        )
+
+        self.initialize()
+
+    def initialize(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.Conv2d)):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LSTM):
+                orthogonal_(m.weight_ih_l0)
+                orthogonal_(m.weight_hh_l0)
+                m.bias_ih_l0.data.zero_()
+                m.bias_hh_l0.data.zero_()
+                n = m.bias_hh_l0.size(0)
+                start, end = n // 4, n // 2
+                m.bias_hh_l0.data[start:end].fill_(1.0)
+
+                if self.num_layers > 1:
+                    orthogonal_(m.weight_ih_l1)
+                    orthogonal_(m.weight_hh_l1)
+                    m.bias_ih_l1.data.zero_()
+                    m.bias_hh_l1.data.zero_()
+                    n = m.bias_hh_l1.size(0)
+                    start, end = n // 4, n // 2
+                    m.bias_hh_l1.data[start:end].fill_(1.0)
+
+    def init_hidden(self, x, batch_size, first_batch=False):
+        weight = next(self.parameters()).data
+        if first_batch:
+            shape = (
+                batch_size,
+                self.num_layers * self.num_direction,
+                self.lstm_size,
+            )
+        else:
+            shape = (
+                self.num_layers * self.num_direction,
+                batch_size,
+                self.lstm_size,
+            )
+        return (
+            weight.new(*shape).zero_().to(x.device),
+            weight.new(*shape).zero_().to(x.device),
+        )
+
+    def _compute_log_spectrogram(self, x):
+        batch_seq, channels, frames = x.shape
+        if frames != self.win_size:
+            raise ValueError(
+                f"expected {self.win_size} platform frames, got {frames}"
+            )
+        flat = x.reshape(batch_seq * channels, frames)
+        stft = torch.stft(
+            flat,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            window=self.hann_window.to(device=x.device, dtype=x.dtype),
+            center=self.center,
+            return_complex=True,
+        )
+        spec = torch.log1p(torch.abs(stft))
+        return spec.reshape(batch_seq, channels, self.freq_bins, self.stft_frames)
+
+    def _spectral_embedding(self, spec):
+        embed = self.spectral_cnn(spec)
+        return embed.reshape(spec.size(0), -1)
+
+    def get_num_params(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def forward(self, x, compute_type=None, hn=None, cn=None):
+        del compute_type
+        self.lstm.flatten_parameters()
+        batch_size = x.size(0)
+        seq_len = x.size(1)
+        x = x.reshape(batch_size * seq_len, x.size(2), x.size(3))
+
+        spec = self._compute_log_spectrogram(x)
+        embed = self._spectral_embedding(spec)
+        embed = embed.view(batch_size, seq_len, -1)
+        if hn is None or cn is None:
+            (hn, cn) = self.init_hidden(embed, batch_size)
+        out, _ = self.lstm(embed, (hn, cn))
+        out = out.contiguous().view(-1, self.lstm_size * self.num_direction)
+        return out
+
+
 class ResNetLSTMSeqNet_Light(nn.Module):
     """Lighter ResNet (3 residual groups) + LSTM trunk, optional transformer head."""
 

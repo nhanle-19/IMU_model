@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tartan_imu.model.common.blocks import FcBlock
-from tartan_imu.model.lstm.trunks import ResNetLSTMSeqNet
+from tartan_imu.model.lstm.trunks import SpectralPlatformLSTMEncoder
 
 
 def _platform_conditioning_cfg(cfg):
@@ -139,7 +139,7 @@ class FoundationModel(nn.Module):
                 )
             )
             platform_encoder_cfg["data"]["sample_freq"] = classifier_sample_freq
-            self.platform_encoder = ResNetLSTMSeqNet(platform_encoder_cfg)
+            self.platform_encoder = SpectralPlatformLSTMEncoder(platform_encoder_cfg)
             self.platform_classifier = nn.Linear(self.lstm_size, self.num_platforms)
             if self.platform_condition_mode == "latent":
                 self.platform_condition_proj = nn.Sequential(
