@@ -15,7 +15,7 @@ data:
   input_channels: 6
   window_size: 64
   stride: 8
-  target_at: end
+  target_at: mean
   train_synthetic_size: 128
   val_synthetic_size: 32
 
