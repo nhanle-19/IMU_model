@@ -27,14 +27,14 @@ def synth_paths():
     }
 
 
-# Expected sums captured from the pre-refactor implementation. Any change to the
-# loaders' numeric output on these paths will break these assertions.
+# Expected sums for deterministic synthetic loader outputs. Any unintended change
+# to the loaders' numeric output on these paths will break these assertions.
 EXPECTED = {
     "humanoid__global__features": (1499, 6, 1670.706964),
     "humanoid__global__targets": (1449, 3, 14.484961),
     "humanoid__global__aux": (1499, 12, 15779.445388),
     "humanoid__local__features": (1499, 6, 14740.938395),
-    "humanoid__local__targets": (1449, 3, 37.839061),
+    "humanoid__local__targets": (1449, 3, 39.270325),
     "humanoid__local__aux": (1499, 12, 15779.445388),
     "airlab__global__features": (1499, 6, 1575.139668),
     "airlab__global__targets": (1449, 3, 29.943809),
@@ -60,9 +60,31 @@ def test_humanoid_global_unchanged(synth_paths):
            "humanoid__global")
 
 
-def test_humanoid_local_unchanged(synth_paths):
+def test_humanoid_local_uses_mean_window_velocity(synth_paths):
     _check(F.run_humanoid_sequence(synth_paths["humanoid"], True, window_size=50),
            "humanoid__local")
+
+
+def test_humanoid_local_first_target_matches_window_mean(synth_paths):
+    from tartan_imu.dataloader.dataset_Humanoid import HumanoidNPZSequence
+
+    window_size = 50
+    seq = HumanoidNPZSequence(
+        synth_paths["humanoid"],
+        imu_freq=100.0,
+        window_size=window_size,
+        verbose=False,
+        use_local_coord=True,
+        mode="test",
+        stage=1,
+    )
+    assert seq.valid
+    np.testing.assert_allclose(
+        seq.get_target()[0],
+        seq.velocity_body[:window_size].mean(axis=0),
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
 
 def test_airlab_global_unchanged(synth_paths):

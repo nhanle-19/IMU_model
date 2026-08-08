@@ -313,7 +313,8 @@ class HumanoidPostProcessedSequence(object):
                 num_windows = int(pelvis_velocity.shape[0] - interval_int + 1)
                 vel_targets = np.zeros((num_windows, pelvis_velocity.shape[1]))
                 for i in range(num_windows):
-                    vel_targets[i] = pelvis_velocity[i + interval_int - 1]
+                    window = pelvis_velocity[i : i + interval_int]
+                    vel_targets[i] = np.mean(window, axis=0)
                 self.targets = vel_targets
             else:
                 return False

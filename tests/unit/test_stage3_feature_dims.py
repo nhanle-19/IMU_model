@@ -86,6 +86,22 @@ def test_stage2_unchanged_35dim(synth):
     assert feat.shape[1] == 35
 
 
+def test_postprocessed_first_target_matches_window_mean(synth):
+    path, _ = synth
+    seq = _seq(path, 2)
+    assert seq.valid
+
+    with np.load(path, allow_pickle=True) as data:
+        pelvis_velocity = data["imu_velocity"][0, :, 1, :][:-1]
+
+    np.testing.assert_allclose(
+        seq.get_target()[0],
+        pelvis_velocity[:20].mean(axis=0),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
 def test_stage3_features_are_64dim(synth):
     seq = _seq(synth[0], 3)
     assert seq.valid

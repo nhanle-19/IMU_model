@@ -400,10 +400,8 @@ class HumanoidNPZSequence(object):
                 num_windows = int(velocity_body.shape[0] - interval_int + 1)
                 vel_body_targets = np.zeros((num_windows, velocity_body.shape[1]))
                 for i in range(num_windows):
-                    # Align with TransformerOdoModel: it takes the LAST frame of the window
-                    # The window for i-th step is [i : i + interval_int]
-                    # The last frame of this window is at index i + interval_int - 1
-                    vel_body_targets[i] = velocity_body[i + interval_int - 1]
+                    window = velocity_body[i : i + interval_int]
+                    vel_body_targets[i] = np.mean(window, axis=0)
                 self.targets = vel_body_targets
             else:
                 return False
