@@ -132,6 +132,12 @@ class FoundationModel(nn.Module):
         self.platform_condition_dim = _platform_condition_dim(cfg)
 
         if self.use_platform_conditioning:
+            encoder_type = self.platform_cfg.get("encoder", "spectral")
+            if encoder_type != "spectral":
+                raise ValueError(
+                    "spectral_specialized branch expects "
+                    "model_param.platform_conditioning.encoder: spectral"
+                )
             platform_encoder_cfg = deepcopy(cfg)
             classifier_sample_freq = float(
                 self.platform_cfg.get(

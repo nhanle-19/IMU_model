@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 
+import yaml
+
 
 REQUIRED_TOP_LEVEL_KEYS = ("data", "model", "train", "schemes")
 
@@ -102,7 +104,27 @@ def validate_model_dims(cfg: dict) -> bool:
     fast here rather than inside the model forward pass. Output is always 3
     (xyz velocity).
     """
-    mp = cfg["model"].get("model_param", {})
+    mp = cfg.get("model_param") or cfg["model"].get("model_param")
+    if mp is None:
+        model_yaml = cfg["model"].get("model_yaml")
+        if not model_yaml or not os.path.isfile(model_yaml):
+            raise ValueError(f"Configured model.model_yaml does not exist: {model_yaml}")
+        with open(model_yaml, "r", encoding="utf-8") as handle:
+            model_cfg = yaml.safe_load(handle) or {}
+        mp = model_cfg.get("model_param", {})
+    model_name = cfg["model"].get("model_name")
+    if model_name == "Foundation_Model" and "platform_conditioning" in mp:
+        pcfg = mp.get("platform_conditioning", {})
+        if not pcfg.get("enabled", False):
+            raise ValueError(
+                "Foundation_Model spectral specialized training expects "
+                "model_param.platform_conditioning.enabled: True"
+            )
+        if pcfg.get("encoder", "spectral") != "spectral":
+            raise ValueError(
+                "spectral_specialized branch expects "
+                "model_param.platform_conditioning.encoder: spectral"
+            )
     stage = mp.get("stage", 1)
     input_dim = mp.get("input_dim", 6)
     output_dim = mp.get("output_dim", 3)

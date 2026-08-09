@@ -13,6 +13,7 @@ model_param:
   use_transformer: False
   platform_conditioning:
     enabled: True
+    encoder: spectral
     classifier_sample_freq: 200
     condition_mode: latent   # latent or index
     latent_dim: 16

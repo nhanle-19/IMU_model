@@ -94,19 +94,14 @@ def train_load_data(cfg, args, paths, world_size):
         [],
     )
 
-    for dir in paths:
-        if dir == "train":
-            for category in paths[dir]:
-                train_data_path_combined.append(paths[dir][category])
-                info(f"  Item: {category}, train Path: {train_data_path_combined}")
-        if dir == "val":
-            for category in paths[dir]:
-                val_data_path_combined.append(paths[dir][category])
-                info(f"  Item: {category}, val Path: {val_data_path_combined}")
-        if dir == "test":
-            for category in paths[dir]:
-                test_data_path_combined.append(paths[dir][category])
-                info(f"  Item: {category}, test Path: {test_data_path_combined}")
+    for split_name, combined in (
+        ("train", train_data_path_combined),
+        ("val", val_data_path_combined),
+        ("test", test_data_path_combined),
+    ):
+        for category, split_path in paths.get(split_name, {}).items():
+            combined.append(split_path)
+            logging.info("%s_data_dir[%s]=%s", split_name, category, split_path)
 
     dataset_name = cfg["data"]["dataset"]
     dataset_utils = load_dataset_module(dataset_name)
