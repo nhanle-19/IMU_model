@@ -14,5 +14,6 @@ debug_logs/
 *.pth
 *.ckpt
 # data
+data/
 *.npz
 .DS_Store
