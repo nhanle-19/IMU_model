@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
+import time
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from imu_velocity_diffusion.checkpoint import save_checkpoint
+from imu_velocity_diffusion.checkpoint import load_checkpoint, save_checkpoint
 from imu_velocity_diffusion.config import load_config
 from imu_velocity_diffusion.data import require_average_velocity_targets
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
@@ -30,13 +33,16 @@ def evaluate(
     schedule: DiffusionSchedule,
     num_candidates: int,
     device: torch.device,
+    max_batches: int | None = None,
 ) -> dict[str, float]:
     model.eval()
     total_noise_loss = 0.0
     total_min_mse = 0.0
     total_count = 0
     with torch.no_grad():
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             batch = batch_to_device(batch, device)
             imu = batch["imu"]
             velocity = batch["velocity"]
@@ -53,15 +59,42 @@ def evaluate(
             total_min_mse += float(min_mse.sum().item())
             total_count += int(velocity.shape[0])
     return {
-        "noise_loss": total_noise_loss / max(total_count, 1),
-        "candidate_min_rmse": math.sqrt(total_min_mse / max(total_count, 1)),
+        "val_noise_loss": total_noise_loss / max(total_count, 1),
+        "val_candidate_min_rmse": math.sqrt(total_min_mse / max(total_count, 1)),
+        "num_eval_samples": float(total_count),
     }
+
+
+def append_metrics(path, metrics: dict[str, float]) -> None:
+    fieldnames = [
+        "epoch",
+        "train_noise_loss",
+        "val_noise_loss",
+        "val_candidate_min_rmse",
+        "num_eval_samples",
+        "best_val_candidate_min_rmse",
+        "epoch_seconds",
+        "validated",
+    ]
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({name: metrics.get(name, "") for name in fieldnames})
+
+
+def split_root(cfg: dict, split: str) -> Path:
+    data_cfg = cfg["data"]
+    split_dirs = data_cfg.get("split_dirs", {})
+    return Path(data_cfg["root"]).expanduser() / split_dirs.get(split, split)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--resume-from", default="")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -82,11 +115,44 @@ def main() -> None:
     )
 
     out_dir = output_dir(cfg)
+    metrics_path = out_dir / "diffusion_metrics.csv"
     best_metric = float("inf")
+    start_epoch = 0
+    if args.resume_from:
+        checkpoint = load_checkpoint(args.resume_from, device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", 0))
+        checkpoint_metrics = checkpoint.get("metrics", {})
+        for metric_name in ("best_val_candidate_min_rmse", "val_candidate_min_rmse"):
+            if metric_name in checkpoint_metrics:
+                best_metric = float(checkpoint_metrics[metric_name])
+                break
+        print(f"resumed_from={args.resume_from} start_epoch={start_epoch}")
     epochs = int(cfg["train"]["epochs"])
     val_candidates = int(cfg["policy"].get("num_candidates", 16))
+    val_every_n_epochs = int(cfg["train"].get("val_every_n_epochs", 1))
+    val_max_batches_cfg = cfg["train"].get("val_max_batches")
+    val_max_batches = (
+        None if val_max_batches_cfg in (None, 0) else int(val_max_batches_cfg)
+    )
 
-    for epoch in range(1, epochs + 1):
+    print(
+        f"device={device} train_samples={len(train_loader.dataset)} "
+        f"val_samples={len(val_loader.dataset)} batch_size={cfg['train']['batch_size']} "
+        f"epochs={epochs} diffusion_steps={cfg['diffusion']['steps']}"
+    )
+    print(f"train_data_dir={split_root(cfg, 'train')} val_data_dir={split_root(cfg, 'val')}")
+    print(
+        f"validation_every={val_every_n_epochs} epoch(s) "
+        f"val_candidates={val_candidates} "
+        f"val_max_batches={val_max_batches if val_max_batches is not None else 'all'}"
+    )
+    print(f"outputs={out_dir} metrics_csv={metrics_path}")
+
+    for epoch in range(start_epoch + 1, epochs + 1):
+        epoch_started_at = time.perf_counter()
         model.train()
         running_loss = 0.0
         running_count = 0
@@ -110,13 +176,43 @@ def main() -> None:
             running_count += int(velocity.shape[0])
             progress.set_postfix(loss=running_loss / max(running_count, 1))
 
-        metrics = evaluate(model, val_loader, schedule, val_candidates, device)
-        metrics["train_noise_loss"] = running_loss / max(running_count, 1)
-        print(
-            f"epoch={epoch} train_noise_loss={metrics['train_noise_loss']:.6f} "
-            f"val_noise_loss={metrics['noise_loss']:.6f} "
-            f"val_candidate_min_rmse={metrics['candidate_min_rmse']:.6f}"
+        should_validate = (
+            epoch == 1 or epoch == epochs or epoch % val_every_n_epochs == 0
         )
+        metrics: dict[str, float] = {}
+        if should_validate:
+            metrics = evaluate(
+                model,
+                val_loader,
+                schedule,
+                val_candidates,
+                device,
+                max_batches=val_max_batches,
+            )
+        metrics["train_noise_loss"] = running_loss / max(running_count, 1)
+        metrics["epoch"] = float(epoch)
+        metrics["epoch_seconds"] = time.perf_counter() - epoch_started_at
+        metrics["validated"] = float(should_validate)
+        if should_validate:
+            print(
+                f"epoch={epoch} train_noise_loss={metrics['train_noise_loss']:.6f} "
+                f"val_noise_loss={metrics['val_noise_loss']:.6f} "
+                f"val_candidate_min_rmse={metrics['val_candidate_min_rmse']:.6f} "
+                f"eval_samples={int(metrics['num_eval_samples'])} "
+                f"seconds={metrics['epoch_seconds']:.1f}"
+            )
+        else:
+            print(
+                f"epoch={epoch} train_noise_loss={metrics['train_noise_loss']:.6f} "
+                f"validation=skipped seconds={metrics['epoch_seconds']:.1f}"
+            )
+        is_best = (
+            should_validate and metrics["val_candidate_min_rmse"] < best_metric
+        )
+        if is_best:
+            best_metric = metrics["val_candidate_min_rmse"]
+        metrics["best_val_candidate_min_rmse"] = best_metric
+        append_metrics(metrics_path, metrics)
 
         save_checkpoint(
             out_dir / "diffusion_last.pt",
@@ -126,8 +222,7 @@ def main() -> None:
             cfg=cfg,
             metrics=metrics,
         )
-        if metrics["candidate_min_rmse"] < best_metric:
-            best_metric = metrics["candidate_min_rmse"]
+        if is_best:
             save_checkpoint(
                 out_dir / "diffusion_best.pt",
                 model=model,
