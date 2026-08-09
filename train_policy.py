@@ -11,6 +11,11 @@ from tqdm import tqdm
 
 from imu_velocity_diffusion.checkpoint import load_checkpoint, save_checkpoint
 from imu_velocity_diffusion.config import load_config
+from imu_velocity_diffusion.data import (
+    assert_compatible_velocity_contract,
+    model_window_size,
+    require_average_velocity_targets,
+)
 from imu_velocity_diffusion.diffusion import DiffusionSchedule
 from imu_velocity_diffusion.factory import build_diffusion_model, build_refiner_model
 from imu_velocity_diffusion.models import VelocityDiffusionModel
@@ -31,6 +36,15 @@ def load_diffusion(
 ) -> tuple[VelocityDiffusionModel, DiffusionSchedule]:
     ckpt = load_checkpoint(path, device)
     diffusion_cfg = ckpt.get("cfg", cfg)
+    require_average_velocity_targets(diffusion_cfg)
+    assert_compatible_velocity_contract(cfg, diffusion_cfg)
+    if model_window_size(cfg["data"]) != model_window_size(diffusion_cfg["data"]):
+        raise ValueError(
+            "train_policy.py feeds IMU windows directly into the diffusion model, "
+            "so data.sample_freq must match the diffusion checkpoint. Exported "
+            "diffusion velocity candidates can still be consumed by a downstream "
+            "40 Hz actual model."
+        )
     model = build_diffusion_model(diffusion_cfg, input_channels, device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
@@ -117,6 +131,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    require_average_velocity_targets(cfg)
     set_seed(int(cfg.get("seed", 42)))
     device = get_device(args.device)
 

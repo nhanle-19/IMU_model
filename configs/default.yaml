@@ -13,8 +13,11 @@ data:
   imu_columns:
   velocity_columns:
   input_channels: 6
-  window_size: 64
-  stride: 8
+  # One actual prediction window: 1 second from the 200 Hz source, fed at 100 Hz.
+  imu_freq: 200.0
+  sample_freq: 100
+  window_size: 200
+  stride: 200
   target_at: mean
   train_synthetic_size: 128
   val_synthetic_size: 32

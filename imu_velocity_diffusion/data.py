@@ -50,6 +50,69 @@ def _time_and_channels(array: np.ndarray) -> tuple[int, int]:
     return int(arr.shape[0]), int(np.prod(arr.shape[1:]))
 
 
+def resolve_downsample_step(data_cfg: dict) -> int:
+    if data_cfg.get("imu_downsample_step") is not None:
+        step = int(data_cfg["imu_downsample_step"])
+    elif (
+        data_cfg.get("imu_freq") is not None
+        and data_cfg.get("sample_freq") is not None
+    ):
+        ratio = float(data_cfg["imu_freq"]) / float(data_cfg["sample_freq"])
+        step = int(round(ratio))
+        if step < 1 or not np.isclose(ratio, step):
+            raise ValueError(
+                "data.imu_freq / data.sample_freq must be a positive integer"
+            )
+    else:
+        step = 1
+    if step < 1:
+        raise ValueError("data.imu_downsample_step must be >= 1")
+    return step
+
+
+def model_window_size(data_cfg: dict) -> int:
+    window_size = int(data_cfg["window_size"])
+    step = resolve_downsample_step(data_cfg)
+    return len(range(0, window_size, step))
+
+
+def require_average_velocity_targets(cfg: dict) -> None:
+    target_at = str(cfg["data"].get("target_at", "end"))
+    if target_at != "mean":
+        raise ValueError(
+            "Diffusion candidates must represent average velocity over the "
+            "actual window; set data.target_at: mean."
+        )
+
+
+def assert_compatible_velocity_contract(current_cfg: dict, diffusion_cfg: dict) -> None:
+    current = current_cfg["data"]
+    diffusion = diffusion_cfg["data"]
+    fields = (
+        "window_size",
+        "stride",
+        "target_at",
+        "imu_key",
+        "velocity_key",
+        "imu_columns",
+        "velocity_columns",
+    )
+    mismatches = [
+        name
+        for name in fields
+        if current.get(name) != diffusion.get(name)
+    ]
+    if mismatches:
+        details = ", ".join(mismatches)
+        raise ValueError(
+            "Current training config does not match the diffusion checkpoint "
+            f"velocity contract: {details}."
+        )
+
+
+assert_compatible_data_config = assert_compatible_velocity_contract
+
+
 class NPZVelocityWindowDataset(Dataset):
     """Sliding-window dataset over NPZ files.
 
@@ -65,6 +128,7 @@ class NPZVelocityWindowDataset(Dataset):
         data_cfg = cfg["data"]
         self.window_size = int(data_cfg["window_size"])
         self.stride = int(data_cfg.get("stride", 1))
+        self.imu_downsample_step = resolve_downsample_step(data_cfg)
         self.target_at = str(data_cfg.get("target_at", "end"))
         self.imu_key = str(data_cfg.get("imu_key", "imu"))
         self.velocity_key = str(data_cfg.get("velocity_key", "velocity"))
@@ -178,7 +242,7 @@ class NPZVelocityWindowDataset(Dataset):
     def __getitem__(self, item: int) -> dict[str, torch.Tensor]:
         seq_id, start = self._locate(item)
         imu_seq, velocity_seq = self._load_sequence(seq_id)
-        imu = imu_seq[start : start + self.window_size]
+        imu = imu_seq[start : start + self.window_size : self.imu_downsample_step]
         vel = self._target_velocity(velocity_seq, start)
         return {
             "imu": torch.from_numpy(imu.T.copy()),

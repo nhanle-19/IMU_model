@@ -108,13 +108,18 @@ test:   89 files, inference-only IMU trajectories
 With the default config, each training sample is:
 
 ```text
-imu      [6, 64]
+imu      [6, 100]
 velocity [3]
 ```
 
 Keys, split names, stride, window size, and optional columns are configured in
-`configs/default.yaml`. The loader indexes files lazily and keeps only a small
-trajectory cache in memory, so it does not preload every NPZ at startup.
+`configs/default.yaml`. The default diffusion window is one actual prediction
+window: 1 second of 200 Hz source IMU, non-overlapping, downsampled to 100 Hz
+before it is fed to the diffusion model. The downstream actual model may use a
+different IMU input rate, such as 40 Hz, because it consumes the diffusion
+model's velocity candidates rather than the diffusion IMU tensor. The loader
+indexes files lazily and keeps only a small trajectory cache in memory, so it
+does not preload every NPZ at startup.
 
 ## Install
 
@@ -160,8 +165,15 @@ During refiner training, the diffusion model is frozen. It samples candidate
 velocities first, then the refiner receives:
 
 ```text
-IMU window + [K, 3] candidate velocities + sample statistics
+IMU window [6, 100] + [K, 3] candidate average velocities + sample statistics
 ```
+
+Each candidate is a suggested body-frame average velocity for the same actual
+1-second source window used as the training target. Downstream 40 Hz training
+can consume these candidates because the frequency-specific diffusion input has
+already been reduced to velocity suggestions. `train_policy.py` checks that the
+current config and diffusion checkpoint agree on this velocity contract before
+feeding candidates into refiner training.
 
 The refiner uses sample mean, variance, min/max range, per-candidate normalized
 offsets, and IMU context. Its loss is final velocity MSE plus a small residual
@@ -183,9 +195,14 @@ The output NPZ contains:
 
 ```text
 window_starts
-candidate_velocities  [N, K, 3]
+candidate_velocities  [N, K, 3]  average body-velocity suggestions
 candidate_weights     [N, K]
 refined_velocity      [N, 3]
+candidate_semantics
+source_window_size
+source_stride
+diffusion_imu_downsample_step
+diffusion_model_window_size
 ```
 
 ## Data Configuration
@@ -198,8 +215,10 @@ data:
   root: ./data
   imu_key: imu
   velocity_key: vel_body
-  window_size: 64
-  stride: 8
+  imu_freq: 200.0
+  sample_freq: 100
+  window_size: 200
+  stride: 200
 ```
 
 If your NPZ arrays use different names or include extra channels, change
