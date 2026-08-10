@@ -95,7 +95,10 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--resume-from", default="")
+    parser.add_argument("--eval-only", action="store_true")
     args = parser.parse_args()
+    if args.eval_only and not args.resume_from:
+        parser.error("--eval-only requires --resume-from")
 
     cfg = load_config(args.config)
     require_average_velocity_targets(cfg)
@@ -150,6 +153,26 @@ def main() -> None:
         f"val_max_batches={val_max_batches if val_max_batches is not None else 'all'}"
     )
     print(f"outputs={out_dir} metrics_csv={metrics_path}")
+
+    if args.eval_only:
+        eval_started_at = time.perf_counter()
+        metrics = evaluate(
+            model,
+            val_loader,
+            schedule,
+            val_candidates,
+            device,
+            max_batches=val_max_batches,
+        )
+        eval_seconds = time.perf_counter() - eval_started_at
+        print(
+            f"eval_only checkpoint_epoch={start_epoch} "
+            f"val_noise_loss={metrics['val_noise_loss']:.6f} "
+            f"val_candidate_min_rmse={metrics['val_candidate_min_rmse']:.6f} "
+            f"eval_samples={int(metrics['num_eval_samples'])} "
+            f"seconds={eval_seconds:.1f}"
+        )
+        return
 
     for epoch in range(start_epoch + 1, epochs + 1):
         epoch_started_at = time.perf_counter()
