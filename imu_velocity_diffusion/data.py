@@ -247,6 +247,7 @@ class NPZVelocityWindowDataset(Dataset):
         return {
             "imu": torch.from_numpy(imu.T.copy()),
             "velocity": torch.from_numpy(vel.astype(np.float32, copy=False)),
+            "platform": self.sequences[seq_id].path.parent.name,
         }
 
 
@@ -274,7 +275,11 @@ class SyntheticVelocityWindowDataset(Dataset):
         return int(self.imu.shape[0])
 
     def __getitem__(self, item: int) -> dict[str, torch.Tensor]:
-        return {"imu": self.imu[item], "velocity": self.velocity[item]}
+        return {
+            "imu": self.imu[item],
+            "velocity": self.velocity[item],
+            "platform": "synthetic",
+        }
 
 
 def build_dataset(cfg: dict, split: str) -> Dataset:

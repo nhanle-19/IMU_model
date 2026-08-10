@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import random
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -47,6 +48,11 @@ def output_dir(cfg: dict) -> Path:
 
 
 def batch_to_device(
-    batch: dict[str, torch.Tensor], device: torch.device
-) -> dict[str, torch.Tensor]:
-    return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+    batch: dict[str, Any], device: torch.device
+) -> dict[str, Any]:
+    return {
+        key: value.to(device, non_blocking=True)
+        if isinstance(value, torch.Tensor)
+        else value
+        for key, value in batch.items()
+    }

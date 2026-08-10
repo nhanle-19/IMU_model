@@ -6,7 +6,9 @@ import argparse
 import csv
 import math
 import time
+from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -34,11 +36,13 @@ def evaluate(
     num_candidates: int,
     device: torch.device,
     max_batches: int | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     model.eval()
     total_noise_loss = 0.0
     total_min_mse = 0.0
     total_count = 0
+    platform_min_mse: dict[str, float] = defaultdict(float)
+    platform_count: dict[str, int] = defaultdict(int)
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             if max_batches is not None and batch_idx >= max_batches:
@@ -58,11 +62,36 @@ def evaluate(
             total_noise_loss += float(noise_loss.sum().item())
             total_min_mse += float(min_mse.sum().item())
             total_count += int(velocity.shape[0])
+            platforms = batch.get("platform")
+            if platforms is None:
+                platforms = ["unknown"] * int(velocity.shape[0])
+            for platform, sample_mse in zip(platforms, min_mse.cpu().tolist()):
+                platform_min_mse[str(platform)] += float(sample_mse)
+                platform_count[str(platform)] += 1
+    platform_rmse = {
+        platform: math.sqrt(platform_min_mse[platform] / count)
+        for platform, count in platform_count.items()
+    }
     return {
         "val_noise_loss": total_noise_loss / max(total_count, 1),
         "val_candidate_min_rmse": math.sqrt(total_min_mse / max(total_count, 1)),
         "num_eval_samples": float(total_count),
+        "platform_candidate_min_rmse": platform_rmse,
+        "platform_eval_samples": dict(platform_count),
     }
+
+
+def print_platform_candidate_metrics(metrics: dict[str, Any]) -> None:
+    rmses = metrics.get("platform_candidate_min_rmse", {})
+    counts = metrics.get("platform_eval_samples", {})
+    if not rmses:
+        return
+    print("val_candidate_min_rmse_by_platform:")
+    for platform in sorted(rmses):
+        print(
+            f"  {platform}: rmse={rmses[platform]:.6f} "
+            f"eval_samples={int(counts.get(platform, 0))}"
+        )
 
 
 def append_metrics(path, metrics: dict[str, float]) -> None:
@@ -172,6 +201,7 @@ def main() -> None:
             f"eval_samples={int(metrics['num_eval_samples'])} "
             f"seconds={eval_seconds:.1f}"
         )
+        print_platform_candidate_metrics(metrics)
         return
 
     for epoch in range(start_epoch + 1, epochs + 1):
@@ -224,6 +254,7 @@ def main() -> None:
                 f"eval_samples={int(metrics['num_eval_samples'])} "
                 f"seconds={metrics['epoch_seconds']:.1f}"
             )
+            print_platform_candidate_metrics(metrics)
         else:
             print(
                 f"epoch={epoch} train_noise_loss={metrics['train_noise_loss']:.6f} "
