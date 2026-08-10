@@ -15,7 +15,7 @@ data:
   input_channels: 6
   # One actual prediction window: 1 second from the 200 Hz source, fed at 100 Hz.
   imu_freq: 200.0
-  sample_freq: 100
+  sample_freq: 200
   window_size: 200
   stride: 200
   target_at: mean
