@@ -138,6 +138,23 @@ python starter/tartanimu_submission.py \
     --head       human \
     --out        submission_tartanimu.csv
     # optional: --checkpoint <local .pt>  --config <local yaml>  --device cpu
+
+# 4. diffusion + refiner stack submission
+#    train with train_diffusion.py/train_policy.py, validate with --split val,
+#    then make the final submission with --split test.
+python starter/diffusion_refiner_submission.py \
+    --split val \
+    --config configs/default.yaml \
+    --diffusion-checkpoint runs/velocity_diffusion/diffusion_best.pt \
+    --refiner-checkpoint runs/velocity_diffusion/refiner_best.pt \
+    --out submission_diffusion_refiner_val.csv
+
+python starter/diffusion_refiner_submission.py \
+    --split test \
+    --config configs/default.yaml \
+    --diffusion-checkpoint runs/velocity_diffusion/diffusion_best.pt \
+    --refiner-checkpoint runs/velocity_diffusion/refiner_best.pt \
+    --out submission_diffusion_refiner.csv
 ```
 
 Upload the resulting CSV on the competition's **Submit Predictions** page.
@@ -155,6 +172,7 @@ Upload the resulting CSV on the competition's **Submit Predictions** page.
 | `README.md` | this guide |
 | `baseline_submission.py` | writes an all-zero (or constant) valid submission |
 | `tartanimu_submission.py` | released pretrained baseline → submission |
+| `diffusion_refiner_submission.py` | trained diffusion + refiner stack → submission |
 | `kaggle_metric_tartanimu_score.py` | the exact leaderboard metric (for reference / val self-scoring) |
 | `starter.ipynb` | notebook walking through data → prediction → submission |
 
