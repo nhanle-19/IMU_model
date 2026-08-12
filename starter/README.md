@@ -126,18 +126,17 @@ python starter/baseline_submission.py \
 # 2. the released pretrained baseline on the labelled val split
 #    (heads route automatically from the CSV's platform column)
 python starter/tartanimu_submission.py \
-    --test_root  /path/to/val \
-    --windows    /path/to/index/val_windows.csv \
+    --split      val \
     --out        submission_val.csv
 
 # 3. the same model on the anonymized test split — no platform column exists,
 #    so a head must be named (or supply your own routing via --routing)
 python starter/tartanimu_submission.py \
-    --test_root  /path/to/test \
-    --windows    /path/to/index/test_windows.csv \
+    --split      test \
     --head       human \
     --out        submission_tartanimu.csv
     # optional: --checkpoint <local .pt>  --config <local yaml>  --device cpu
+    # specialized route_by_prediction checkpoints may omit --head
 ```
 
 Upload the resulting CSV on the competition's **Submit Predictions** page.
