@@ -205,6 +205,82 @@ diffusion_imu_downsample_step
 diffusion_model_window_size
 ```
 
+## 4. Run Evaluation and Trajectory Reconstruction
+
+There are two evaluation paths in this repo.
+
+To re-run validation for a trained diffusion checkpoint:
+
+```bash
+python train_diffusion.py \
+  --config configs/default.yaml \
+  --resume-from runs/velocity_diffusion/diffusion_best.pt \
+  --eval-only
+```
+
+This prints validation noise loss, candidate oracle RMSE, per-platform candidate
+metrics when platform labels are present, and the number of evaluated samples.
+
+To reconstruct full trajectories and compute ATE/RTE-style trajectory metrics,
+use the foundation-model evaluator:
+
+```bash
+python main_net.py \
+  --config config/datasets/tartanimu/tartan_imu_dataset.yaml \
+  --resume_from path/to/checkpoint.pt
+```
+
+Before running this command, make sure the evaluation config points at the
+dataset and output folders you want:
+
+```yaml
+data:
+  dataset: AirLab
+  data_path:
+    car: ../dataset/tartanimu_data/car/2
+    drone: ../dataset/tartanimu_data/drone/drone_dataset_uzh_euroc_subt
+    dog: ../dataset/tartanimu_data/dog/1+eth
+    human: ../dataset/tartanimu_data/human/1
+
+train:
+  use_multi_gpu: false
+
+test:
+  out_dir: ../exp_result/tartan_imu_dataset
+
+schemes:
+  train: false
+  test: true
+```
+
+`--resume_from` is the checkpoint loaded for testing. If it is omitted,
+`main_net.py` loads the latest checkpoint under
+`train.out_dir/checkpoints/`.
+
+Trajectory reconstruction integrates the model's predicted velocities into
+positions in `tartan_imu/evaluation/postprocess.py`, then segments each
+trajectory for local drift-corrected metrics. Outputs are written under
+`test.out_dir/<motion_type><split>/<trajectory_name>/`, including:
+
+```text
+trajectory.txt                  full reconstructed trajectory
+est_pose_<epoch>.txt            predicted positions
+gt_pose_<epoch>.txt             ground-truth positions
+metrics.json                    per-trajectory metrics
+segment_metrics_summary.json    per-segment metrics
+segment_*/trajectory.txt        segment-level reconstructed trajectories
+```
+
+`trajectory.txt` stores comma-separated columns:
+
+```text
+timestamp, pred_x, pred_y, pred_z, gt_x, gt_y, gt_z, cov_x, cov_y, cov_z
+```
+
+At the run level, the evaluator also writes summary CSVs such as
+`overall_summary.csv`, `trajectory_metrics.csv`, `segment_metrics.csv`, and
+`performance_comparison.csv` in `test.out_dir`.
+
 ## Data Configuration
 
 The repository is already configured for the current `data/` folder:
