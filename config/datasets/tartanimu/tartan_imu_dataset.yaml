@@ -69,8 +69,8 @@ train:
   use_pretrain_model: False
   use_multi_gpu: True              # Enable DistributedDataParallel when multiple GPUs are visible
   use_amp: True                    # Automatic Mixed Precision for speed
-  batch_size: 128                  # Fallback global batch size when batch_size_per_gpu is unset
-  batch_size_per_gpu: 128          # main_net.py multiplies this by visible GPU count
+  batch_size: 1024                 # Fallback global batch size when batch_size_per_gpu is unset
+  batch_size_per_gpu: 1024         # main_net.py multiplies this by visible GPU count
   epochs: 250                      # Full training schedule
   start_cov_epochs: 200            # Enable covariance training
   n_workers: 4                     # Increased workers for better data loading

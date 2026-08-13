@@ -144,7 +144,7 @@ WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0 \
 ```
 
 For multi-GPU training, set `train.use_multi_gpu: True` in the YAML and expose
-the GPUs you want. The full config uses `train.batch_size_per_gpu: 128`, and
+the GPUs you want. The full config uses `train.batch_size_per_gpu`, and
 `main_net.py` multiplies it by the visible GPU count:
 
 ```bash
@@ -152,6 +152,18 @@ WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0,1,2 \
   python main_net.py \
   --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml
 ```
+
+Before committing to a long training run, check
+`config/datasets/tartanimu/tartan_imu_dataset.yaml` and confirm
+`train.batch_size_per_gpu` fits your hardware. Effective global batch is:
+
+```text
+global batch = batch_size_per_gpu x number of visible GPUs
+```
+
+The default is tuned for large-memory GPUs. Watch `nvidia-smi` during the first
+epoch: if memory and utilization are low, increase `batch_size_per_gpu`; if you
+hit OOM or validation becomes unstable, reduce it.
 
 Evaluate or warm-start from a checkpoint:
 
