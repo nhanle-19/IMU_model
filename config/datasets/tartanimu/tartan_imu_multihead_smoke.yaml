@@ -10,15 +10,12 @@ seeds:
 # Smoke variant of tartan_imu_dataset.yaml: few epochs, single-GPU, train+test.
 # ============================================================================
 data:
-  dataset: AirLab
-  data_path:
-      car: ../dataset/tartanimu_data/car/2
-      dog: ../dataset/tartanimu_data/dog/1+eth
-      human: ../dataset/tartanimu_data/human/1
+  dataset: TartanIMUChallenge
+  data_path: ./data
 
   use_local_coord: True
   train_dir: train
-  test_dir: test
+  test_dir:
   validation_dir: val
 
   random_partition: False
@@ -68,7 +65,7 @@ train:
   predict_start: 0
   predict_end: 10
   add_noise: True
-  active_heads: ["car","dog","human"]
+  active_heads: ["car","dog","drone","human"]
 
   optimizer:
     learning_rate: 0.0001
@@ -89,5 +86,5 @@ test:
 
 schemes:
   train: True
-  test:  True
+  test:  False
   online_adaption: False

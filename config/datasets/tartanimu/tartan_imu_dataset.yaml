@@ -9,17 +9,13 @@ seeds:
 # DATA CONFIGURATION 
 # ============================================================================
 data:
-  dataset: AirLab
-  data_path:
-      car: ../dataset/tartanimu_data/car/2  
-      drone: ../dataset/tartanimu_data/drone/drone_dataset_uzh_euroc_subt
-      dog: ../dataset/tartanimu_data/dog/1+eth
-      human: ../dataset/tartanimu_data/human/1       
+  dataset: TartanIMUChallenge
+  data_path: ./data
 
   # Data processing settings
   use_local_coord: True
   train_dir: train
-  test_dir: test
+  test_dir:
   validation_dir: val
 
   # Data split ratios (optimized for single motion type)

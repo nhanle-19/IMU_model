@@ -99,7 +99,12 @@ def train_load_data(cfg, args, paths, world_size):
         ("val", val_data_path_combined),
         ("test", test_data_path_combined),
     ):
-        for category, split_path in paths.get(split_name, {}).items():
+        split_paths = paths.get(split_name, {})
+        if isinstance(split_paths, dict):
+            iterable = split_paths.items()
+        else:
+            iterable = ((str(index), path) for index, path in enumerate(split_paths))
+        for category, split_path in iterable:
             combined.append(split_path)
             logging.info("%s_data_dir[%s]=%s", split_name, category, split_path)
 
@@ -523,9 +528,12 @@ def main(rank: int, world_size: int, args, resume_path, model_path, cfg):
             valid_data_path = GetDataPath(
                 os.path.join(cfg["data"]["data_path"], cfg["data"]["validation_dir"])
             )
-            test_data_path = GetDataPath(
-                os.path.join(cfg["data"]["data_path"], cfg["data"]["test_dir"])
-            )
+            if cfg["data"].get("test_dir") is not None:
+                test_data_path = GetDataPath(
+                    os.path.join(cfg["data"]["data_path"], cfg["data"]["test_dir"])
+                )
+            else:
+                test_data_path = []
 
             # Check if data_path is a directory with subfolders (debug_dataset structure)
             if os.path.isdir(cfg["data"]["data_path"]):
@@ -539,15 +547,17 @@ def main(rank: int, world_size: int, args, resume_path, model_path, cfg):
                         val_subfolder = os.path.join(
                             subfolder_path, cfg["data"]["validation_dir"]
                         )
-                        test_subfolder = os.path.join(
-                            subfolder_path, cfg["data"]["test_dir"]
+                        test_subfolder = (
+                            os.path.join(subfolder_path, cfg["data"]["test_dir"])
+                            if cfg["data"].get("test_dir") is not None
+                            else None
                         )
 
                         if os.path.exists(train_subfolder):
                             train_data_path.append(train_subfolder)
                         if os.path.exists(val_subfolder):
                             valid_data_path.append(val_subfolder)
-                        if os.path.exists(test_subfolder):
+                        if test_subfolder is not None and os.path.exists(test_subfolder):
                             test_data_path.append(test_subfolder)
 
         # load data Load training set, validation set, and test set

@@ -116,6 +116,17 @@ model YAML is `config/resnet_lstm_multihead.yaml`, where
 `route_by_prediction: True` let one shared model infer the platform route
 internally.
 
+The training configs in this branch read the challenge-format dataset directly
+from `./data`:
+
+```text
+data/train/<platform>/*.npz
+data/val/<platform>/*.npz
+```
+
+Those files should contain `imu` and `vel_body`, matching the diffusion branch
+data layout.
+
 Run the branch smoke test:
 
 ```bash
@@ -128,6 +139,15 @@ Train the full spectral model:
 
 ```bash
 WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0 \
+  python main_net.py \
+  --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml
+```
+
+For multi-GPU training, set `train.use_multi_gpu: True` in the YAML and expose
+the GPUs you want:
+
+```bash
+WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0,1,2 \
   python main_net.py \
   --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml
 ```

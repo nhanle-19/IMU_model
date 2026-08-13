@@ -71,9 +71,13 @@ def validate_split_dirs(cfg: dict) -> bool:
     data_cfg = cfg["data"]
     data_path = data_cfg.get("data_path")
     subdirs = [
-        data_cfg.get("train_dir", "train"),
-        data_cfg.get("validation_dir", "val"),
-        data_cfg.get("test_dir", "test"),
+        sub
+        for sub in (
+            data_cfg.get("train_dir", "train"),
+            data_cfg.get("validation_dir", "val"),
+            data_cfg.get("test_dir", "test"),
+        )
+        if sub is not None
     ]
     roots: list[str] = []
     if isinstance(data_path, str):

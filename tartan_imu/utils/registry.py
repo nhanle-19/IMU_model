@@ -14,6 +14,7 @@ from importlib import import_module
 # entry that is not importable would fail at run time rather than at import.
 DATASET_MODULE_REGISTRY = {
     "AirLab": "tartan_imu.dataloader.dataset_AirLab",
+    "TartanIMUChallenge": "tartan_imu.dataloader.dataset_TartanIMUChallenge",
     "Humanoid": "tartan_imu.dataloader.dataset_Humanoid",
     "HumanoidPostProcessed": "tartan_imu.dataloader.dataset_HumanoidPostProcessed",
     "HumanoidPostProcessedCached": "tartan_imu.dataloader.dataset_HumanoidPostProcessedCached",
