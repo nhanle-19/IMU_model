@@ -144,7 +144,8 @@ WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0 \
 ```
 
 For multi-GPU training, set `train.use_multi_gpu: True` in the YAML and expose
-the GPUs you want:
+the GPUs you want. The full config uses `train.batch_size_per_gpu: 128`, and
+`main_net.py` multiplies it by the visible GPU count:
 
 ```bash
 WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0,1,2 \

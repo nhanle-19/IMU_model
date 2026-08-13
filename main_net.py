@@ -86,6 +86,21 @@ class WorkerInit:
         np.random.seed(self.seed + worker_id)
 
 
+def resolve_global_batch_size(cfg, gpu_count: int) -> None:
+    """Resolve train.batch_size from train.batch_size_per_gpu when configured."""
+    per_gpu = cfg["train"].get("batch_size_per_gpu")
+    if per_gpu is None:
+        return
+    effective_gpus = max(int(gpu_count), 1) if cfg["train"].get("use_multi_gpu") else 1
+    cfg["train"]["batch_size"] = int(per_gpu) * effective_gpus
+    logging.info(
+        "Resolved train.batch_size=%d from batch_size_per_gpu=%d x %d GPU(s)",
+        cfg["train"]["batch_size"],
+        int(per_gpu),
+        effective_gpus,
+    )
+
+
 def train_load_data(cfg, args, paths, world_size):
     """Build train/val/test DataLoaders from the resolved data paths."""
     train_data_path_combined, val_data_path_combined, test_data_path_combined = (
@@ -738,6 +753,7 @@ if __name__ == "__main__":
     # a checkpoint when cfg train.use_pretrain_model is set (see config/resume.py).
     resolve_resume(cfg, resume_path)
     gpu_num = torch.cuda.device_count()
+    resolve_global_batch_size(cfg, gpu_num)
 
     # Single GPU mode support
     if not cfg["train"]["use_multi_gpu"]:
