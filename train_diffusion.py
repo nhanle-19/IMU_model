@@ -25,6 +25,7 @@ from imu_velocity_diffusion.training import (
     get_device,
     make_loader,
     output_dir,
+    resolve_batch_size,
     set_seed,
 )
 
@@ -133,6 +134,7 @@ def main() -> None:
     require_average_velocity_targets(cfg)
     set_seed(int(cfg.get("seed", 42)))
     device = get_device(args.device)
+    resolve_batch_size(cfg, "diffusion", device)
 
     train_loader = make_loader(cfg, "train", shuffle=True)
     val_loader = make_loader(cfg, "val", shuffle=False)

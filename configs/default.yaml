@@ -46,7 +46,12 @@ policy:
 
 train:
   out_dir: ./runs/velocity_diffusion
-  batch_size: 32
+  # Fallback used when the stage-specific knobs below are unset.
+  batch_size: 1024
+  # The diffusion/refiner trainers are single-process/single-device. These
+  # values are per selected GPU and are not multiplied by visible GPU count.
+  diffusion_batch_size_per_gpu: 4096
+  refiner_batch_size_per_gpu: 512
   epochs: 100
   learning_rate: 0.0003
   weight_decay: 0.0001

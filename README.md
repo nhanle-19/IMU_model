@@ -146,6 +146,20 @@ runs/velocity_diffusion/diffusion_best.pt
 The validation metric `candidate_min_rmse` measures the oracle error of the
 closest sampled candidate.
 
+Batch-size knobs live in `configs/default.yaml`. The diffusion and refiner
+trainers are single-device scripts, so these are per selected GPU and are not
+multiplied by the number of visible GPUs:
+
+```yaml
+train:
+  diffusion_batch_size_per_gpu: 4096
+  refiner_batch_size_per_gpu: 512
+```
+
+Tune them independently. Diffusion can usually take a larger batch; refiner
+training is heavier because each sample generates `policy.num_candidates`
+diffusion candidates.
+
 ## 2. Train Distribution Refiner
 
 ```bash

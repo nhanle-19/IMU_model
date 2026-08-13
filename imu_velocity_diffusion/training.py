@@ -28,6 +28,32 @@ def get_device(requested: str = "auto") -> torch.device:
     return torch.device(requested)
 
 
+def resolve_batch_size(cfg: dict, stage: str, device: torch.device | str) -> int:
+    """Resolve train.batch_size from stage-specific per-device settings.
+
+    The diffusion stack is single-process/single-device. If multiple GPUs are
+    visible, select one with --device; this resolver intentionally does not
+    multiply by GPU count.
+    """
+    train_cfg = cfg["train"]
+    stage_key = f"{stage}_batch_size_per_gpu"
+    per_device = train_cfg.get(stage_key, train_cfg.get("batch_size_per_gpu"))
+    if per_device is None:
+        return int(train_cfg["batch_size"])
+
+    resolved = int(per_device)
+    train_cfg["batch_size"] = resolved
+    visible_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if visible_gpus > 1 and torch.device(device).type == "cuda":
+        print(
+            f"{stage}_batch_size={resolved} per selected GPU "
+            f"(visible_gpus={visible_gpus}; this trainer uses one device)"
+        )
+    else:
+        print(f"{stage}_batch_size={resolved}")
+    return resolved
+
+
 def make_loader(cfg: dict, split: str, shuffle: bool) -> DataLoader:
     dataset = build_dataset(cfg, split)
     train_cfg = cfg["train"]
