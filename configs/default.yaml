@@ -29,12 +29,12 @@ model:
   time_dim: 64
 
 diffusion:
-  steps: 50
-  beta_start: 0.0001
-  beta_end: 0.02
+  steps: 200
+  beta_start: 0.001
+  beta_end: 0.05
 
 policy:
-  num_candidates: 32
+  num_candidates: 64
   hidden_dim: 128
   candidate_dim: 64
   residual_penalty_weight: 0.01

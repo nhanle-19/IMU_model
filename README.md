@@ -208,7 +208,7 @@ diffusion_model_window_size
 ## 4. Write a Submission CSV
 
 Use `starter/diffusion_refiner_submission.py` to run the trained diffusion +
-refiner stack over a full split and write the Kaggle-style CSV:
+refiner stack over the official test windows and write the Kaggle CSV:
 
 ```bash
 python starter/diffusion_refiner_submission.py \
@@ -225,9 +225,11 @@ The output CSV has the required columns:
 window_id,vx,vy,vz
 ```
 
-By default, the script reads the test NPZ files from `data.root/split_dirs.test`
-and uses `data/index/test_windows.csv` when that official index file exists. If
-your challenge data or index lives somewhere else, pass both paths explicitly:
+For Kaggle, the `window_id` values must match the official
+`index/test_windows.csv` or `sample_submission.csv` exactly. By default, the
+script looks for `data/index/test_windows.csv`, and if `--split-root` is passed
+it also checks for a sibling `index/test_windows.csv` beside that split folder.
+For unusual layouts, pass both paths explicitly:
 
 ```bash
 python starter/diffusion_refiner_submission.py \
@@ -239,6 +241,10 @@ python starter/diffusion_refiner_submission.py \
   --refiner-checkpoint runs/velocity_diffusion/refiner_best.pt \
   --out submission_diffusion_refiner.csv
 ```
+
+If no official windows CSV is present, the script stops instead of generating
+local placeholder `window_id` values. Those generated IDs are only for smoke
+tests and can be enabled with `--allow-generated-window-ids`.
 
 For a validation-format CSV before submitting, use `--split val` and write to a
 separate output file such as `submission_diffusion_refiner_val.csv`.

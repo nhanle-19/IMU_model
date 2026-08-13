@@ -82,8 +82,30 @@ def _split_root(cfg: dict, split: str) -> Path:
     return Path(data_cfg["root"]).expanduser() / split_dirs.get(split, split)
 
 
-def _windows_path(cfg: dict, split: str) -> Path:
-    return Path(cfg["data"]["root"]).expanduser() / "index" / f"{split}_windows.csv"
+def _candidate_windows_paths(cfg: dict, split: str, split_root: Path) -> list[Path]:
+    filename = f"{split}_windows.csv"
+    data_root = Path(cfg["data"]["root"]).expanduser()
+    candidates = [
+        data_root / "index" / filename,
+        split_root.parent / "index" / filename,
+    ]
+
+    unique_candidates = []
+    seen = set()
+    for candidate in candidates:
+        key = candidate.resolve(strict=False)
+        if key not in seen:
+            unique_candidates.append(candidate)
+            seen.add(key)
+    return unique_candidates
+
+
+def _windows_path(cfg: dict, split: str, split_root: Path) -> Path:
+    candidates = _candidate_windows_paths(cfg, split, split_root)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def _resolve_npz(split_root: Path, traj_id: str) -> Path:
@@ -190,7 +212,10 @@ def main() -> None:
     parser.add_argument(
         "--windows",
         default=None,
-        help="index CSV; defaults to config data.root/index/{split}_windows.csv",
+        help=(
+            "index CSV; defaults to config data.root/index/{split}_windows.csv, "
+            "then sibling index/{split}_windows.csv beside --split-root"
+        ),
     )
     parser.add_argument("--out", required=True, help="output submission CSV")
     parser.add_argument("--config", default="configs/default.yaml")
@@ -200,6 +225,14 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--allow-generated-window-ids",
+        action="store_true",
+        help=(
+            "allow fallback window_id generation when no windows CSV is present; "
+            "useful for smoke tests, but not valid for Kaggle submissions"
+        ),
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -211,7 +244,11 @@ def main() -> None:
     split_root = (
         Path(args.split_root).expanduser() if args.split_root else _split_root(cfg, args.split)
     )
-    windows_path = Path(args.windows).expanduser() if args.windows else _windows_path(cfg, args.split)
+    windows_path = (
+        Path(args.windows).expanduser()
+        if args.windows
+        else _windows_path(cfg, args.split, split_root)
+    )
 
     diffusion_ckpt = load_checkpoint(args.diffusion_checkpoint, device)
     diffusion_cfg = diffusion_ckpt.get("cfg", cfg)
@@ -240,6 +277,14 @@ def main() -> None:
         print(f"split={args.split} root={split_root} windows={windows_path}")
     elif args.windows is not None:
         raise FileNotFoundError(f"windows CSV not found: {windows_path}")
+    elif args.split == "test" and not args.allow_generated_window_ids:
+        raise FileNotFoundError(
+            f"official test windows CSV not found: {windows_path}. "
+            "Kaggle submissions must use the exact window_id values from the "
+            "challenge index/sample submission. Put it at data/index/test_windows.csv, "
+            "beside the split folders as index/test_windows.csv, pass --windows explicitly, "
+            "or use --allow-generated-window-ids only for local smoke tests."
+        )
     else:
         by_traj = _build_windows_from_split(split_root, diffusion_cfg["data"])
         print(
