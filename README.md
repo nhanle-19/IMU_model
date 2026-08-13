@@ -205,7 +205,45 @@ diffusion_imu_downsample_step
 diffusion_model_window_size
 ```
 
-## 4. Run Evaluation and Trajectory Reconstruction
+## 4. Write a Submission CSV
+
+Use `starter/diffusion_refiner_submission.py` to run the trained diffusion +
+refiner stack over a full split and write the Kaggle-style CSV:
+
+```bash
+python starter/diffusion_refiner_submission.py \
+  --split test \
+  --config configs/default.yaml \
+  --diffusion-checkpoint runs/velocity_diffusion/diffusion_best.pt \
+  --refiner-checkpoint runs/velocity_diffusion/refiner_best.pt \
+  --out submission_diffusion_refiner.csv
+```
+
+The output CSV has the required columns:
+
+```text
+window_id,vx,vy,vz
+```
+
+By default, the script reads the test NPZ files from `data.root/split_dirs.test`
+and uses `data/index/test_windows.csv` when that official index file exists. If
+your challenge data or index lives somewhere else, pass both paths explicitly:
+
+```bash
+python starter/diffusion_refiner_submission.py \
+  --split test \
+  --split-root /path/to/test \
+  --windows /path/to/index/test_windows.csv \
+  --config configs/default.yaml \
+  --diffusion-checkpoint runs/velocity_diffusion/diffusion_best.pt \
+  --refiner-checkpoint runs/velocity_diffusion/refiner_best.pt \
+  --out submission_diffusion_refiner.csv
+```
+
+For a validation-format CSV before submitting, use `--split val` and write to a
+separate output file such as `submission_diffusion_refiner_val.csv`.
+
+## 5. Run Evaluation and Trajectory Reconstruction
 
 There are two evaluation paths in this repo.
 
