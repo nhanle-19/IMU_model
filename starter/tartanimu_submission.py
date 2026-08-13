@@ -47,6 +47,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -68,6 +69,22 @@ def _resolve_weights(checkpoint: str | None, config: str | None) -> tuple[str, s
     config = config or hf_hub_download(HF_REPO, HF_CONFIG)
     checkpoint = checkpoint or hf_hub_download(HF_REPO, HF_CHECKPOINT)
     return config, checkpoint
+
+
+def _load_runtime_config(config_path: str) -> dict:
+    """Load a config and merge its model YAML when it is an experiment YAML."""
+    from tartan_imu.config import configer
+
+    cfg = configer.load_config(config_path)
+    model_yaml = cfg.get("model", {}).get("model_yaml")
+    if model_yaml and "model_param" not in cfg:
+        model_yaml_path = Path(model_yaml).expanduser()
+        if not model_yaml_path.is_absolute() and not model_yaml_path.exists():
+            model_yaml_path = Path(config_path).expanduser().parent / model_yaml_path
+        with open(model_yaml_path, "r", encoding="utf-8") as handle:
+            model_cfg = yaml.load(handle, Loader=yaml.Loader)
+        configer.update_recursive(cfg, model_cfg)
+    return cfg
 
 
 def _load_windows(path: str) -> tuple[dict, bool]:
@@ -309,10 +326,8 @@ def main() -> None:
             "Pass --split {train,val,test}, or pass both --split-root and --windows."
         )
 
-    from tartan_imu.config import configer
-
     config_path, checkpoint_path = _resolve_weights(args.checkpoint, args.config)
-    cfg = configer.load_config(config_path)
+    cfg = _load_runtime_config(config_path)
     cfg["train"]["use_multi_gpu"] = False
     step = int(cfg["data"]["imu_freq"] / cfg["data"]["sample_freq"])
     seq_len = int(cfg["train"]["seq_len"])

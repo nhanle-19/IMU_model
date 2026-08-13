@@ -138,6 +138,14 @@ python starter/tartanimu_submission.py \
     # optional: --checkpoint <local .pt>  --config <local yaml>  --device cpu
     # spectral route_by_prediction checkpoints may omit --head when paired with
     # their matching --checkpoint and --config
+
+# 4. spectral_specialized branch checkpoint on anonymized test
+#    (routes platform internally, so no --head is required)
+python starter/tartanimu_submission.py \
+    --split      test \
+    --config     ./config/datasets/tartanimu/tartan_imu_dataset.yaml \
+    --checkpoint ./exp_result/tartan_imu_dataset/checkpoints/best_model.pt \
+    --out        submission_spectral.csv
 ```
 
 Upload the resulting CSV on the competition's **Submit Predictions** page.

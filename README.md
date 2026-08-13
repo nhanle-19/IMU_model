@@ -108,6 +108,59 @@ fine-tuning and evaluation example.
 `main_net.py` is the entry point for both training and evaluation. Experiment
 behavior is defined by a YAML configuration.
 
+### Specialized Spectral Branch
+
+This branch is set up for the spectral platform-conditioning model. The active
+model YAML is `config/resnet_lstm_multihead.yaml`, where
+`model_param.platform_conditioning.encoder: spectral` and
+`route_by_prediction: True` let one shared model infer the platform route
+internally.
+
+Run the branch smoke test:
+
+```bash
+WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0 \
+  python main_net.py \
+  --config ./config/datasets/tartanimu/tartan_imu_multihead_smoke.yaml
+```
+
+Train the full spectral model:
+
+```bash
+WANDB_MODE=disabled CUDA_VISIBLE_DEVICES=0 \
+  python main_net.py \
+  --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml
+```
+
+Evaluate or warm-start from a checkpoint:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+  python main_net.py \
+  --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml \
+  --checkpoint ./exp_result/tartan_imu_dataset/checkpoints/best_model.pt
+```
+
+For evaluation-only runs, use a config with `schemes.train: False` and
+`schemes.test: True`; otherwise the full dataset config trains by default.
+
+Write a challenge submission from a trained spectral checkpoint. Because this
+branch routes by prediction, `--head` is not required when the checkpoint and
+config match:
+
+```bash
+python starter/tartanimu_submission.py \
+  --split test \
+  --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml \
+  --checkpoint ./exp_result/tartan_imu_dataset/checkpoints/best_model.pt \
+  --out submission_spectral.csv
+```
+
+For a labelled validation submission, use the same command with `--split val`
+and a different output path. The released Hugging Face unified baseline is not
+the spectral route-by-prediction checkpoint, so it may still require `--head`
+on anonymized test data.
+
 Run the small end-to-end smoke experiment:
 
 ```bash

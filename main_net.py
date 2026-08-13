@@ -655,7 +655,7 @@ def main(rank: int, world_size: int, args, resume_path, model_path, cfg):
                 os.mkdir(cfg["test"]["out_dir"])
 
         # Run testing
-        tester = configer.build_tester(args, cfg, model, resume_path)
+        tester = configer.build_tester(args, cfg, model, model_path or resume_path)
         tester.test(test_path_list, 1000, model)
 
 
