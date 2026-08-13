@@ -15,6 +15,8 @@ import time
 import numpy as np
 import torch
 import wandb
+from tqdm import tqdm
+
 from tartan_imu.model.common import function
 
 from tools import distributed_eval
@@ -253,7 +255,14 @@ class Trainer:
             )
         else:
             logging.info("-------------- Training ---------------")
-        for bid, batch in enumerate(data_loader):
+        progress = tqdm(
+            data_loader,
+            desc=f"epoch {epoch}/{self.epochs}",
+            disable=self.local_rank != 0,
+            dynamic_ncols=True,
+            leave=False,
+        )
+        for bid, batch in enumerate(progress):
             iteration = iteration + 1
             if self.use_multi_gpu:
                 batch = [t.cuda(self.local_rank, non_blocking=True) for t in batch]
@@ -286,6 +295,12 @@ class Trainer:
             total_steps += 1
             total_data_time += data_time
             total_compute_time += inferback_time
+            if self.local_rank == 0:
+                progress.set_postfix(
+                    loss=f"{batch_loss:.4f}",
+                    mse=f"{batch_mse:.4f}",
+                    lr=f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                )
             data_start = time.time()
 
         if total_steps == 0:

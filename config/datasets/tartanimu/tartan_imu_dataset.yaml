@@ -67,9 +67,9 @@ model:
 train:
   out_dir: ./exp_result/tartan_imu_dataset
   use_pretrain_model: False
-  use_multi_gpu: False             # Safe default; enable only when launching distributed
+  use_multi_gpu: True              # Enable DistributedDataParallel when multiple GPUs are visible
   use_amp: True                    # Automatic Mixed Precision for speed
-  batch_size: 64                   # Single-GPU real-training default
+  batch_size: 192                  # Global batch size; with 3 GPUs this is 64/GPU
   epochs: 250                      # Full training schedule
   start_cov_epochs: 200            # Enable covariance training
   n_workers: 4                     # Increased workers for better data loading
