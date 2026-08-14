@@ -51,6 +51,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from tartan_imu.config import configer
+
 HF_REPO = "Tartan-IMU/TartanIMU"
 HF_CHECKPOINT = "checkpoints/unified.pt"
 HF_CONFIG = "config/unified.yaml"
