@@ -102,6 +102,12 @@ def test_raw_platform_windows_train_classifier_conditioning():
     )
     assert classifier_grad, "no gradient reached the platform classifier"
 
+    conditioner_grad = any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.backbone_conditioner.parameters()
+    )
+    assert conditioner_grad, "no gradient reached the backbone conditioner"
+
 
 def test_mixed_batch_trains_all_active_heads():
     cfg, model = _build_model()

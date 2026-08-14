@@ -130,6 +130,9 @@ class FoundationModel(nn.Module):
         self.num_platforms = int(self.platform_cfg.get("num_platforms", 4))
         self.platform_condition_mode = self.platform_cfg.get("condition_mode", "latent")
         self.platform_condition_dim = _platform_condition_dim(cfg)
+        self.backbone_condition_enabled = bool(
+            self.platform_cfg.get("condition_backbone", True)
+        )
 
         if self.use_platform_conditioning:
             encoder_type = self.platform_cfg.get("encoder", "spectral")
@@ -160,6 +163,13 @@ class FoundationModel(nn.Module):
             self.platform_hard_eval = bool(
                 self.platform_cfg.get("hard_index_at_eval", False)
             )
+            if self.backbone_condition_enabled:
+                self.backbone_conditioner = nn.Linear(
+                    self.platform_condition_dim,
+                    2 * cfg["model_param"]["input_dim"],
+                )
+                nn.init.zeros_(self.backbone_conditioner.weight)
+                nn.init.zeros_(self.backbone_conditioner.bias)
 
     def forward(
         self,
@@ -181,6 +191,18 @@ class FoundationModel(nn.Module):
         batch_size = x.size(0)
         seq_len = x.size(1)
 
+        platform_aux = {}
+        condition = None
+        if self.use_platform_conditioning:
+            has_raw_platform_windows = platform_x is not None
+            condition, platform_aux = self._compute_platform_condition(x, platform_x)
+            if self.backbone_condition_enabled:
+                x = self._condition_backbone_input(x, condition)
+            if not has_raw_platform_windows and not self.platform_cfg.get(
+                "emit_aux_for_fallback", False
+            ):
+                platform_aux = {}
+
         # Forward pass through shared backbone
         model_output = self.model(x)
 
@@ -188,14 +210,7 @@ class FoundationModel(nn.Module):
         if isinstance(model_output, tuple):
             model_output = model_output[0]  # Take the first element (output tensor)
 
-        platform_aux = {}
-        if self.use_platform_conditioning:
-            has_raw_platform_windows = platform_x is not None
-            condition, platform_aux = self._compute_platform_condition(x, platform_x)
-            if not has_raw_platform_windows and not self.platform_cfg.get(
-                "emit_aux_for_fallback", False
-            ):
-                platform_aux = {}
+        if condition is not None:
             model_output = torch.cat((model_output, condition), dim=1)
 
         if compute_all_heads:
@@ -241,6 +256,15 @@ class FoundationModel(nn.Module):
             "_platform_logits": logits,
             "_platform_probs": F.softmax(logits, dim=-1),
         }
+
+    def _condition_backbone_input(self, x, condition):
+        """Use the platform/environment latent as an input FiLM signal."""
+        gamma_beta = self.backbone_conditioner(condition)
+        gamma, beta = torch.chunk(gamma_beta, 2, dim=1)
+        batch_size, seq_len, channels, _frames = x.shape
+        gamma = gamma.view(batch_size, seq_len, channels, 1)
+        beta = beta.view(batch_size, seq_len, channels, 1)
+        return x * (1.0 + torch.tanh(gamma)) + beta
 
     def _upsample_velocity_windows_for_platform(self, x):
         """Compatibility fallback for callers that only provide 40 Hz windows."""

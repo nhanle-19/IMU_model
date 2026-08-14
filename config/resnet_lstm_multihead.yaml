@@ -17,6 +17,7 @@ model_param:
     classifier_sample_freq: 200
     condition_mode: latent   # latent or index
     latent_dim: 16
+    condition_backbone: True # use latent to FiLM-condition the velocity backbone input
     num_platforms: 4
     loss_weight: 0.2
     route_by_prediction: True
