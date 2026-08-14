@@ -152,7 +152,7 @@ diffusion batch size is per GPU:
 
 ```yaml
 train:
-  diffusion_batch_size_per_gpu: 2048
+  diffusion_batch_size_per_gpu: 1024
   refiner_batch_size_per_gpu: 512
 ```
 
@@ -162,9 +162,9 @@ For multi-GPU diffusion training:
 torchrun --nproc_per_node=4 train_diffusion.py --config configs/default.yaml
 ```
 
-With `diffusion_batch_size_per_gpu: 2048`, the effective global batch is
-`2048 * nproc_per_node`, so the command above trains with a global batch of
-8192.
+With `diffusion_batch_size_per_gpu: 1024`, the effective global batch is
+`1024 * nproc_per_node`, so the command above trains with a global batch of
+4096.
 
 Tune them independently. Diffusion can usually take a larger batch; refiner
 training is heavier because each sample generates `policy.num_candidates`
