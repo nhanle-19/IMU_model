@@ -146,15 +146,25 @@ runs/velocity_diffusion/diffusion_best.pt
 The validation metric `candidate_min_rmse` measures the oracle error of the
 closest sampled candidate.
 
-Batch-size knobs live in `configs/default.yaml`. The diffusion and refiner
-trainers are single-device scripts, so these are per selected GPU and are not
-multiplied by the number of visible GPUs:
+Batch-size knobs live in `configs/default.yaml`. Diffusion training supports
+single-GPU runs with `python` and multi-GPU runs with `torchrun`; the configured
+diffusion batch size is per GPU:
 
 ```yaml
 train:
   diffusion_batch_size_per_gpu: 2048
   refiner_batch_size_per_gpu: 512
 ```
+
+For multi-GPU diffusion training:
+
+```bash
+torchrun --nproc_per_node=4 train_diffusion.py --config configs/default.yaml
+```
+
+With `diffusion_batch_size_per_gpu: 2048`, the effective global batch is
+`2048 * nproc_per_node`, so the command above trains with a global batch of
+8192.
 
 Tune them independently. Diffusion can usually take a larger batch; refiner
 training is heavier because each sample generates `policy.num_candidates`
