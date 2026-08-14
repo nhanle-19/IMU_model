@@ -152,7 +152,7 @@ multiplied by the number of visible GPUs:
 
 ```yaml
 train:
-  diffusion_batch_size_per_gpu: 4096
+  diffusion_batch_size_per_gpu: 2048
   refiner_batch_size_per_gpu: 512
 ```
 

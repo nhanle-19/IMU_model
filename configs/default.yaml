@@ -50,7 +50,7 @@ train:
   batch_size: 1024
   # The diffusion/refiner trainers are single-process/single-device. These
   # values are per selected GPU and are not multiplied by visible GPU count.
-  diffusion_batch_size_per_gpu: 4096
+  diffusion_batch_size_per_gpu: 2048
   refiner_batch_size_per_gpu: 512
   epochs: 100
   learning_rate: 0.0003
