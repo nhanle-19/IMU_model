@@ -159,7 +159,8 @@ train:
 For multi-GPU diffusion training:
 
 ```bash
-torchrun --nproc_per_node=4 train_diffusion.py --config configs/default.yaml
+cd /path/to/IMU_model
+torchrun --nproc_per_node=4 "$PWD/train_diffusion.py" --config "$PWD/configs/default.yaml"
 ```
 
 With `diffusion_batch_size_per_gpu: 1024`, the effective global batch is
