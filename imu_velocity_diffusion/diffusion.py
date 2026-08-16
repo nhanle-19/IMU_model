@@ -49,10 +49,30 @@ class DiffusionSchedule:
         imu: torch.Tensor,
         num_candidates: int,
         velocity_dim: int = 3,
+        max_sample_batch_size: int | None = None,
     ) -> torch.Tensor:
         """Generate ``[B, K, 3]`` velocity candidates conditioned on IMU."""
         model.eval()
         batch_size = imu.shape[0]
+        if num_candidates <= 0:
+            raise ValueError("num_candidates must be positive")
+        if max_sample_batch_size is not None and max_sample_batch_size > 0:
+            candidates_per_chunk = max(1, max_sample_batch_size // max(batch_size, 1))
+            if candidates_per_chunk < num_candidates:
+                chunks = []
+                for start in range(0, num_candidates, candidates_per_chunk):
+                    chunk_candidates = min(candidates_per_chunk, num_candidates - start)
+                    chunks.append(
+                        self.sample(
+                            model,
+                            imu,
+                            num_candidates=chunk_candidates,
+                            velocity_dim=velocity_dim,
+                            max_sample_batch_size=None,
+                        )
+                    )
+                return torch.cat(chunks, dim=1)
+
         imu_rep = imu.repeat_interleave(num_candidates, dim=0)
         x = torch.randn(
             batch_size * num_candidates,

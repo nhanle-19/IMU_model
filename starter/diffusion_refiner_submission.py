@@ -186,7 +186,12 @@ def _predict_windows(
     velocities = []
     for start in range(0, len(windows), batch_size):
         imu = windows[start : start + batch_size].to(device)
-        candidates = schedule.sample(diffusion, imu, num_candidates=num_candidates)
+        candidates = schedule.sample(
+            diffusion,
+            imu,
+            num_candidates=num_candidates,
+            max_sample_batch_size=8192,
+        )
         outputs = refiner(imu, candidates)
         velocities.append(outputs["velocity"].cpu().numpy())
     return np.concatenate(velocities, axis=0)

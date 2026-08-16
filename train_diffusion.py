@@ -56,7 +56,14 @@ def evaluate(
             pred_noise = model(imu, noisy_velocity, timesteps)
             noise_loss = F.mse_loss(pred_noise, noise, reduction="none").mean(dim=1)
 
-            candidates = schedule.sample(model, imu, num_candidates=num_candidates)
+            candidates = schedule.sample(
+                model,
+                imu,
+                num_candidates=num_candidates,
+                max_sample_batch_size=int(
+                    cfg["policy"].get("candidate_sample_batch_size", 8192)
+                ),
+            )
             candidate_mse = ((candidates - velocity[:, None, :]) ** 2).mean(dim=-1)
             min_mse = candidate_mse.min(dim=1).values
 

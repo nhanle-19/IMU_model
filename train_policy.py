@@ -64,7 +64,14 @@ def make_candidates(
     cfg: dict,
 ) -> torch.Tensor:
     num_candidates = int(cfg["policy"].get("num_candidates", 16))
-    candidates = schedule.sample(diffusion, imu, num_candidates=num_candidates)
+    candidates = schedule.sample(
+        diffusion,
+        imu,
+        num_candidates=num_candidates,
+        max_sample_batch_size=int(
+            cfg["policy"].get("candidate_sample_batch_size", 8192)
+        ),
+    )
 
     if cfg["policy"].get("bootstrap_with_target_candidate", False):
         std = float(cfg["policy"].get("target_candidate_std", 0.05))

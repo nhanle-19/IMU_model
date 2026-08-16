@@ -80,11 +80,19 @@ def main() -> None:
 
     batch_size = int(cfg.get("inference", {}).get("batch_size", 256))
     num_candidates = args.num_candidates or int(cfg["policy"].get("num_candidates", 16))
+    candidate_sample_batch_size = int(
+        cfg["policy"].get("candidate_sample_batch_size", 8192)
+    )
     all_candidates, all_weights, all_velocity = [], [], []
     with torch.no_grad():
         for start in range(0, len(windows), batch_size):
             imu = windows[start : start + batch_size].to(device)
-            candidates = schedule.sample(diffusion, imu, num_candidates=num_candidates)
+            candidates = schedule.sample(
+                diffusion,
+                imu,
+                num_candidates=num_candidates,
+                max_sample_batch_size=candidate_sample_batch_size,
+            )
             outputs = refiner(imu, candidates)
             all_candidates.append(candidates.cpu().numpy())
             all_weights.append(outputs["weights"].cpu().numpy())

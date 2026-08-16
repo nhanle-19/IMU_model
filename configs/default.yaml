@@ -35,6 +35,9 @@ diffusion:
 
 policy:
   num_candidates: 64
+  # Cap the expanded diffusion sampling batch (batch_size * candidate chunk)
+  # used during validation, policy training, and inference.
+  candidate_sample_batch_size: 8192
   hidden_dim: 128
   candidate_dim: 64
   residual_penalty_weight: 0.01
@@ -50,7 +53,7 @@ train:
   batch_size: 1024
   # The diffusion/refiner trainers are single-process/single-device. These
   # values are per selected GPU and are not multiplied by visible GPU count.
-  diffusion_batch_size_per_gpu: 1024
+  diffusion_batch_size_per_gpu: 512
   refiner_batch_size_per_gpu: 512
   epochs: 100
   learning_rate: 0.0003
