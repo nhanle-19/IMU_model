@@ -10,7 +10,6 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 
 from imu_velocity_diffusion.data import build_dataset
 
@@ -55,24 +54,16 @@ def resolve_batch_size(cfg: dict, stage: str, device: torch.device | str) -> int
     return resolved
 
 
-def make_loader(
-    cfg: dict, split: str, shuffle: bool, *, distributed: bool = False
-) -> DataLoader:
+def make_loader(cfg: dict, split: str, shuffle: bool) -> DataLoader:
     dataset = build_dataset(cfg, split)
     train_cfg = cfg["train"]
-    sampler = (
-        DistributedSampler(dataset, shuffle=shuffle)
-        if distributed and split == "train"
-        else None
-    )
     return DataLoader(
         dataset,
         batch_size=int(train_cfg["batch_size"]),
-        shuffle=shuffle if sampler is None else False,
+        shuffle=shuffle,
         num_workers=int(train_cfg.get("num_workers", 0)),
         pin_memory=torch.cuda.is_available(),
         drop_last=bool(train_cfg.get("drop_last", False)) and split == "train",
-        sampler=sampler,
     )
 
 
