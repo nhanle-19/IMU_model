@@ -36,6 +36,7 @@ def evaluate(
     schedule: DiffusionSchedule,
     num_candidates: int,
     device: torch.device,
+    candidate_sample_batch_size: int,
     max_batches: int | None = None,
 ) -> dict[str, Any]:
     model.eval()
@@ -60,9 +61,7 @@ def evaluate(
                 model,
                 imu,
                 num_candidates=num_candidates,
-                max_sample_batch_size=int(
-                    cfg["policy"].get("candidate_sample_batch_size", 8192)
-                ),
+                max_sample_batch_size=candidate_sample_batch_size,
             )
             candidate_mse = ((candidates - velocity[:, None, :]) ** 2).mean(dim=-1)
             min_mse = candidate_mse.min(dim=1).values
@@ -173,6 +172,9 @@ def main() -> None:
         print(f"resumed_from={args.resume_from} start_epoch={start_epoch}")
     epochs = int(cfg["train"]["epochs"])
     val_candidates = int(cfg["policy"].get("num_candidates", 16))
+    candidate_sample_batch_size = int(
+        cfg["policy"].get("candidate_sample_batch_size", 8192)
+    )
     val_every_n_epochs = int(cfg["train"].get("val_every_n_epochs", 1))
     val_max_batches_cfg = cfg["train"].get("val_max_batches")
     val_max_batches = (
@@ -200,6 +202,7 @@ def main() -> None:
             schedule,
             val_candidates,
             device,
+            candidate_sample_batch_size,
             max_batches=val_max_batches,
         )
         eval_seconds = time.perf_counter() - eval_started_at
@@ -249,6 +252,7 @@ def main() -> None:
                 schedule,
                 val_candidates,
                 device,
+                candidate_sample_batch_size,
                 max_batches=val_max_batches,
             )
         metrics["train_noise_loss"] = running_loss / max(running_count, 1)
