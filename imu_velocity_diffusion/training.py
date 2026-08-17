@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch.utils.data import Sampler
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -100,27 +99,6 @@ def distributed_barrier() -> None:
         dist.barrier()
 
 
-class DistributedEvalSampler(Sampler[int]):
-    """Shard eval data across ranks without padding or duplicate samples."""
-
-    def __init__(self, dataset) -> None:
-        if is_distributed():
-            self.num_replicas = dist.get_world_size()
-            self.rank = dist.get_rank()
-        else:
-            self.num_replicas = 1
-            self.rank = 0
-        self.dataset = dataset
-
-    def __iter__(self):
-        return iter(range(self.rank, len(self.dataset), self.num_replicas))
-
-    def __len__(self) -> int:
-        if len(self.dataset) <= self.rank:
-            return 0
-        return ((len(self.dataset) - 1 - self.rank) // self.num_replicas) + 1
-
-
 def resolve_batch_size(cfg: dict, stage: str, device: torch.device | str) -> int:
     """Resolve train.batch_size from stage-specific per-device settings.
 
@@ -155,15 +133,12 @@ def make_loader(
     shuffle: bool,
     *,
     distributed: bool = False,
-    distributed_eval: bool = False,
 ) -> DataLoader:
     dataset = build_dataset(cfg, split)
     train_cfg = cfg["train"]
     sampler = None
     if distributed and split == "train":
         sampler = DistributedSampler(dataset, shuffle=shuffle)
-    elif distributed_eval and split != "train":
-        sampler = DistributedEvalSampler(dataset)
     return DataLoader(
         dataset,
         batch_size=int(train_cfg["batch_size"]),

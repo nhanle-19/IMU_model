@@ -143,19 +143,9 @@ def evaluate(
             total_mse += float(mse.sum().item())
             total_oracle_mse += float(oracle_mse.sum().item())
             total_count += int(mse.shape[0])
-    totals = torch.tensor(
-        [total_mse, total_oracle_mse, float(total_count)],
-        device=device,
-        dtype=torch.float64,
-    )
-    reduce_sum(totals)
-    total_mse = float(totals[0].item())
-    total_oracle_mse = float(totals[1].item())
-    total_count = int(totals[2].item())
     return {
         "rmse": math.sqrt(total_mse / max(total_count, 1)),
         "candidate_oracle_rmse": math.sqrt(total_oracle_mse / max(total_count, 1)),
-        "num_eval_samples": float(total_count),
     }
 
 
@@ -184,9 +174,7 @@ def main() -> None:
     train_loader = make_loader(
         cfg, "train", shuffle=True, distributed=distributed
     )
-    val_loader = make_loader(
-        cfg, "val", shuffle=False, distributed_eval=distributed
-    )
+    val_loader = make_loader(cfg, "val", shuffle=False)
     input_channels = int(train_loader.dataset.input_channels)
 
     diffusion, schedule = load_diffusion(
@@ -225,8 +213,7 @@ def main() -> None:
         )
         print(
             f"validation_every={val_every_n_epochs} epoch(s) "
-            f"val_max_batches_per_rank="
-            f"{val_max_batches if val_max_batches is not None else 'all'}"
+            f"val_max_batches={val_max_batches if val_max_batches is not None else 'all'}"
         )
 
     for epoch in range(1, epochs + 1):
@@ -269,7 +256,7 @@ def main() -> None:
             epoch == 1 or epoch == epochs or epoch % val_every_n_epochs == 0
         )
         metrics: dict[str, float] = {}
-        if should_validate:
+        if should_validate and is_main_process():
             metrics = evaluate(
                 unwrap_model(refiner),
                 diffusion,
@@ -290,7 +277,6 @@ def main() -> None:
                     f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "
                     f"val_rmse={metrics['rmse']:.6f} "
                     f"candidate_oracle_rmse={metrics['candidate_oracle_rmse']:.6f} "
-                    f"eval_samples={int(metrics['num_eval_samples'])} "
                     f"seconds={metrics['epoch_seconds']:.1f}"
                 )
             else:
