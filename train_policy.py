@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import time
 
 import torch
@@ -159,6 +160,14 @@ def main() -> None:
     require_average_velocity_targets(cfg)
     device, rank, world_size, local_rank = setup_distributed(args.device)
     distributed = is_distributed()
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+    print(
+        f"rank={rank} local_rank={local_rank} device={device} "
+        f"cuda_current_device="
+        f"{torch.cuda.current_device() if device.type == 'cuda' else 'cpu'} "
+        f"CUDA_VISIBLE_DEVICES={visible_devices}",
+        flush=True,
+    )
     set_seed(int(cfg.get("seed", 42)) + rank)
     resolve_batch_size(cfg, "refiner", device)
 
@@ -177,7 +186,6 @@ def main() -> None:
             refiner,
             device_ids=[local_rank] if device.type == "cuda" else None,
             output_device=local_rank if device.type == "cuda" else None,
-            broadcast_buffers=False,
         )
     optimizer = torch.optim.AdamW(
         refiner.parameters(),
