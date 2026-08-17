@@ -51,8 +51,8 @@ train:
   out_dir: ./runs/velocity_diffusion
   # Fallback used when the stage-specific knobs below are unset.
   batch_size: 1024
-  # The diffusion/refiner trainers are single-process/single-device. These
-  # values are per selected GPU and are not multiplied by visible GPU count.
+  # Stage-specific batch sizes are per process/device. With torchrun refiner
+  # DDP, each rank uses refiner_batch_size_per_gpu.
   diffusion_batch_size_per_gpu: 256
   refiner_batch_size_per_gpu: 512
   epochs: 100

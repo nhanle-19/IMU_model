@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 
 import torch
 import torch.nn.functional as F
@@ -21,11 +22,17 @@ from imu_velocity_diffusion.factory import build_diffusion_model, build_refiner_
 from imu_velocity_diffusion.models import VelocityDiffusionModel
 from imu_velocity_diffusion.training import (
     batch_to_device,
-    get_device,
+    cleanup_distributed,
+    distributed_barrier,
+    is_distributed,
+    is_main_process,
     make_loader,
     output_dir,
+    reduce_sum,
     resolve_batch_size,
     set_seed,
+    setup_distributed,
+    unwrap_model,
 )
 
 
@@ -103,13 +110,23 @@ def refiner_loss(
     }
 
 
-def evaluate(refiner, diffusion, schedule, loader, cfg, device) -> dict[str, float]:
+def evaluate(
+    refiner,
+    diffusion,
+    schedule,
+    loader,
+    cfg,
+    device,
+    max_batches: int | None = None,
+) -> dict[str, float]:
     refiner.eval()
     total_mse = 0.0
     total_oracle_mse = 0.0
     total_count = 0
     with torch.no_grad():
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             batch = batch_to_device(batch, device)
             candidates = make_candidates(
                 diffusion, schedule, batch["imu"], batch["velocity"], cfg
@@ -140,11 +157,14 @@ def main() -> None:
 
     cfg = load_config(args.config)
     require_average_velocity_targets(cfg)
-    set_seed(int(cfg.get("seed", 42)))
-    device = get_device(args.device)
+    device, rank, world_size, local_rank = setup_distributed(args.device)
+    distributed = is_distributed()
+    set_seed(int(cfg.get("seed", 42)) + rank)
     resolve_batch_size(cfg, "refiner", device)
 
-    train_loader = make_loader(cfg, "train", shuffle=True)
+    train_loader = make_loader(
+        cfg, "train", shuffle=True, distributed=distributed
+    )
     val_loader = make_loader(cfg, "val", shuffle=False)
     input_channels = int(train_loader.dataset.input_channels)
 
@@ -152,6 +172,13 @@ def main() -> None:
         args.diffusion_checkpoint, cfg, input_channels, device
     )
     refiner = build_refiner_model(cfg, input_channels, device)
+    if distributed:
+        refiner = torch.nn.parallel.DistributedDataParallel(
+            refiner,
+            device_ids=[local_rank] if device.type == "cuda" else None,
+            output_device=local_rank if device.type == "cuda" else None,
+            broadcast_buffers=False,
+        )
     optimizer = torch.optim.AdamW(
         refiner.parameters(),
         lr=float(cfg["train"]["learning_rate"]),
@@ -161,12 +188,38 @@ def main() -> None:
     out_dir = output_dir(cfg)
     best_rmse = float("inf")
     epochs = int(cfg["train"]["epochs"])
+    val_every_n_epochs = max(1, int(cfg["train"].get("val_every_n_epochs", 1)))
+    val_max_batches_cfg = cfg["train"].get("val_max_batches")
+    val_max_batches = (
+        None if val_max_batches_cfg in (None, 0) else int(val_max_batches_cfg)
+    )
+
+    if is_main_process():
+        print(
+            f"device={device} world_size={world_size} "
+            f"train_samples={len(train_loader.dataset)} "
+            f"val_samples={len(val_loader.dataset)} "
+            f"batch_size_per_rank={cfg['train']['batch_size']} "
+            f"epochs={epochs} diffusion_steps={schedule.steps} "
+            f"num_candidates={int(cfg['policy'].get('num_candidates', 16))}"
+        )
+        print(
+            f"validation_every={val_every_n_epochs} epoch(s) "
+            f"val_max_batches={val_max_batches if val_max_batches is not None else 'all'}"
+        )
 
     for epoch in range(1, epochs + 1):
+        if distributed and hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(epoch)
+        epoch_started_at = time.perf_counter()
         refiner.train()
         total_loss = 0.0
         total_count = 0
-        progress = tqdm(train_loader, desc=f"refiner epoch {epoch}/{epochs}")
+        progress = tqdm(
+            train_loader,
+            desc=f"refiner epoch {epoch}/{epochs}",
+            disable=not is_main_process(),
+        )
         for batch in progress:
             batch = batch_to_device(batch, device)
             candidates = make_candidates(
@@ -187,32 +240,64 @@ def main() -> None:
             total_count += batch_size
             progress.set_postfix(loss=total_loss / max(total_count, 1), **loss_parts)
 
-        metrics = evaluate(refiner, diffusion, schedule, val_loader, cfg, device)
-        metrics["train_loss"] = total_loss / max(total_count, 1)
-        print(
-            f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "
-            f"val_rmse={metrics['rmse']:.6f} "
-            f"candidate_oracle_rmse={metrics['candidate_oracle_rmse']:.6f}"
+        train_totals = torch.tensor(
+            [total_loss, float(total_count)], device=device, dtype=torch.float64
         )
+        reduce_sum(train_totals)
+        should_validate = (
+            epoch == 1 or epoch == epochs or epoch % val_every_n_epochs == 0
+        )
+        metrics: dict[str, float] = {}
+        if should_validate and is_main_process():
+            metrics = evaluate(
+                unwrap_model(refiner),
+                diffusion,
+                schedule,
+                val_loader,
+                cfg,
+                device,
+                max_batches=val_max_batches,
+            )
+        if is_main_process():
+            metrics["train_loss"] = float(
+                train_totals[0].item() / max(train_totals[1].item(), 1.0)
+            )
+            metrics["epoch_seconds"] = time.perf_counter() - epoch_started_at
+            metrics["validated"] = float(should_validate)
+            if should_validate:
+                print(
+                    f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "
+                    f"val_rmse={metrics['rmse']:.6f} "
+                    f"candidate_oracle_rmse={metrics['candidate_oracle_rmse']:.6f} "
+                    f"seconds={metrics['epoch_seconds']:.1f}"
+                )
+            else:
+                print(
+                    f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "
+                    f"validation=skipped seconds={metrics['epoch_seconds']:.1f}"
+                )
 
-        save_checkpoint(
-            out_dir / "refiner_last.pt",
-            model=refiner,
-            optimizer=optimizer,
-            epoch=epoch,
-            cfg=cfg,
-            metrics=metrics,
-        )
-        if metrics["rmse"] < best_rmse:
-            best_rmse = metrics["rmse"]
             save_checkpoint(
-                out_dir / "refiner_best.pt",
+                out_dir / "refiner_last.pt",
                 model=refiner,
                 optimizer=optimizer,
                 epoch=epoch,
                 cfg=cfg,
                 metrics=metrics,
             )
+            if should_validate and metrics["rmse"] < best_rmse:
+                best_rmse = metrics["rmse"]
+                save_checkpoint(
+                    out_dir / "refiner_best.pt",
+                    model=refiner,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    cfg=cfg,
+                    metrics=metrics,
+                )
+        distributed_barrier()
+
+    cleanup_distributed()
 
 
 if __name__ == "__main__":

@@ -18,8 +18,9 @@ def save_checkpoint(
     metrics: dict[str, float] | None = None,
 ) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    model_to_save = model.module if hasattr(model, "module") else model
     payload: dict[str, Any] = {
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model_to_save.state_dict(),
         "epoch": epoch,
         "cfg": cfg,
         "metrics": metrics or {},
