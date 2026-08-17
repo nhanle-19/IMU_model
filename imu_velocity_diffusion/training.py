@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.utils.data import Sampler
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -61,11 +62,12 @@ def setup_distributed(requested: str = "auto") -> tuple[torch.device, int, int, 
             device = torch.device(f"cuda:{local_rank}")
         else:
             device = torch.device("cpu")
+    timeout_seconds = int(os.environ.get("TORCH_DISTRIBUTED_TIMEOUT_SECONDS", "21600"))
     if not dist.is_initialized():
         dist.init_process_group(
             backend=backend,
             init_method="env://",
-            timeout=datetime.timedelta(seconds=1800),
+            timeout=datetime.timedelta(seconds=timeout_seconds),
         )
     return device, rank, world_size, local_rank
 
@@ -96,6 +98,27 @@ def reduce_sum(tensor: torch.Tensor) -> torch.Tensor:
 def distributed_barrier() -> None:
     if is_distributed():
         dist.barrier()
+
+
+class DistributedEvalSampler(Sampler[int]):
+    """Shard eval data across ranks without padding or duplicate samples."""
+
+    def __init__(self, dataset) -> None:
+        if is_distributed():
+            self.num_replicas = dist.get_world_size()
+            self.rank = dist.get_rank()
+        else:
+            self.num_replicas = 1
+            self.rank = 0
+        self.dataset = dataset
+
+    def __iter__(self):
+        return iter(range(self.rank, len(self.dataset), self.num_replicas))
+
+    def __len__(self) -> int:
+        if len(self.dataset) <= self.rank:
+            return 0
+        return ((len(self.dataset) - 1 - self.rank) // self.num_replicas) + 1
 
 
 def resolve_batch_size(cfg: dict, stage: str, device: torch.device | str) -> int:
@@ -132,14 +155,15 @@ def make_loader(
     shuffle: bool,
     *,
     distributed: bool = False,
+    distributed_eval: bool = False,
 ) -> DataLoader:
     dataset = build_dataset(cfg, split)
     train_cfg = cfg["train"]
-    sampler = (
-        DistributedSampler(dataset, shuffle=shuffle)
-        if distributed and split == "train"
-        else None
-    )
+    sampler = None
+    if distributed and split == "train":
+        sampler = DistributedSampler(dataset, shuffle=shuffle)
+    elif distributed_eval and split != "train":
+        sampler = DistributedEvalSampler(dataset)
     return DataLoader(
         dataset,
         batch_size=int(train_cfg["batch_size"]),
