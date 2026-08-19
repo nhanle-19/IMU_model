@@ -154,9 +154,18 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--diffusion-checkpoint", required=True)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--resume-from", default="")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Override train.epochs; useful when resuming past the config value.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    if args.epochs is not None:
+        cfg["train"]["epochs"] = args.epochs
     require_average_velocity_targets(cfg)
     device, rank, world_size, local_rank = setup_distributed(args.device)
     distributed = is_distributed()
@@ -195,6 +204,18 @@ def main() -> None:
 
     out_dir = output_dir(cfg)
     best_rmse = float("inf")
+    start_epoch = 0
+    if args.resume_from:
+        checkpoint = load_checkpoint(args.resume_from, device)
+        unwrap_model(refiner).load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", 0))
+        checkpoint_metrics = checkpoint.get("metrics", {})
+        if "rmse" in checkpoint_metrics:
+            best_rmse = float(checkpoint_metrics["rmse"])
+        if is_main_process():
+            print(f"resumed_from={args.resume_from} start_epoch={start_epoch}")
     epochs = int(cfg["train"]["epochs"])
     val_every_n_epochs = max(1, int(cfg["train"].get("val_every_n_epochs", 1)))
     val_max_batches_cfg = cfg["train"].get("val_max_batches")
@@ -216,7 +237,16 @@ def main() -> None:
             f"val_max_batches={val_max_batches if val_max_batches is not None else 'all'}"
         )
 
-    for epoch in range(1, epochs + 1):
+    if start_epoch >= epochs:
+        if is_main_process():
+            print(
+                f"resume checkpoint epoch {start_epoch} is already >= "
+                f"target epochs {epochs}; increase --epochs to continue."
+            )
+        cleanup_distributed()
+        return
+
+    for epoch in range(start_epoch + 1, epochs + 1):
         if distributed and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
         epoch_started_at = time.perf_counter()
