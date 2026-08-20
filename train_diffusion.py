@@ -93,7 +93,11 @@ def print_platform_candidate_metrics(metrics: dict[str, Any]) -> None:
     counts = metrics.get("platform_eval_samples", {})
     if not rmses:
         return
-    print("val_candidate_min_rmse_by_platform:")
+    average = metrics.get("val_candidate_min_rmse")
+    if average is None:
+        print("val_candidate_min_rmse_by_platform:")
+    else:
+        print(f"val_candidate_min_rmse_by_platform average={average:.6f}:")
     for platform in sorted(rmses):
         print(
             f"  {platform}: rmse={rmses[platform]:.6f} "

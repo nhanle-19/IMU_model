@@ -53,7 +53,7 @@ train:
   batch_size: 1024
   # Stage-specific batch sizes are per process/device. With torchrun refiner
   # DDP, each rank uses refiner_batch_size_per_gpu.
-  diffusion_batch_size_per_gpu: 256
+  diffusion_batch_size_per_gpu: 128
   refiner_batch_size_per_gpu: 512
   epochs: 100
   learning_rate: 0.0003
@@ -62,7 +62,7 @@ train:
   num_workers: 4
   drop_last: false
   val_every_n_epochs: 5
-  val_max_batches: 3
+  val_max_batches: 0
 
 inference:
   batch_size: 256
