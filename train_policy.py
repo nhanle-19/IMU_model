@@ -6,6 +6,8 @@ import argparse
 import math
 import os
 import time
+from collections import defaultdict
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -97,16 +99,21 @@ def refiner_loss(
     velocity_loss = F.mse_loss(outputs["velocity"], target)
     residual = outputs["corrected_candidates"] - candidates
     residual_penalty = residual.pow(2).mean()
+    global_residual = outputs["velocity"] - outputs["weighted_velocity"]
+    global_residual_penalty = global_residual.pow(2).mean()
     weights = outputs["weights"].clamp_min(1e-8)
     attention_entropy = -(weights * weights.log()).sum(dim=1).mean()
     total = (
         velocity_loss
         + float(cfg["policy"].get("residual_penalty_weight", 0.01)) * residual_penalty
+        + float(cfg["policy"].get("global_residual_penalty_weight", 0.0))
+        * global_residual_penalty
         - float(cfg["policy"].get("attention_entropy_weight", 0.0)) * attention_entropy
     )
     return total, {
         "velocity_loss": float(velocity_loss.detach().item()),
         "residual_penalty": float(residual_penalty.detach().item()),
+        "global_residual_penalty": float(global_residual_penalty.detach().item()),
         "attention_entropy": float(attention_entropy.detach().item()),
     }
 
@@ -119,11 +126,18 @@ def evaluate(
     cfg,
     device,
     max_batches: int | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     refiner.eval()
     total_mse = 0.0
     total_oracle_mse = 0.0
+    total_distribution_mean_mse = 0.0
+    total_weighted_velocity_mse = 0.0
     total_count = 0
+    platform_mse: dict[str, float] = defaultdict(float)
+    platform_oracle_mse: dict[str, float] = defaultdict(float)
+    platform_distribution_mean_mse: dict[str, float] = defaultdict(float)
+    platform_weighted_velocity_mse: dict[str, float] = defaultdict(float)
+    platform_count: dict[str, int] = defaultdict(int)
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             if max_batches is not None and batch_idx >= max_batches:
@@ -134,6 +148,12 @@ def evaluate(
             )
             outputs = refiner(batch["imu"], candidates)
             mse = ((outputs["velocity"] - batch["velocity"]) ** 2).mean(dim=-1)
+            distribution_mean_mse = (
+                (outputs["distribution_mean"] - batch["velocity"]) ** 2
+            ).mean(dim=-1)
+            weighted_velocity_mse = (
+                (outputs["weighted_velocity"] - batch["velocity"]) ** 2
+            ).mean(dim=-1)
             oracle_mse = (
                 ((candidates - batch["velocity"][:, None, :]) ** 2)
                 .mean(dim=-1)
@@ -142,11 +162,86 @@ def evaluate(
             )
             total_mse += float(mse.sum().item())
             total_oracle_mse += float(oracle_mse.sum().item())
+            total_distribution_mean_mse += float(distribution_mean_mse.sum().item())
+            total_weighted_velocity_mse += float(weighted_velocity_mse.sum().item())
             total_count += int(mse.shape[0])
+            platforms = batch.get("platform")
+            if platforms is None:
+                platforms = ["unknown"] * int(mse.shape[0])
+            for (
+                platform,
+                sample_mse,
+                sample_oracle_mse,
+                sample_distribution_mean_mse,
+                sample_weighted_velocity_mse,
+            ) in zip(
+                platforms,
+                mse.cpu().tolist(),
+                oracle_mse.cpu().tolist(),
+                distribution_mean_mse.cpu().tolist(),
+                weighted_velocity_mse.cpu().tolist(),
+            ):
+                platform = str(platform)
+                platform_mse[platform] += float(sample_mse)
+                platform_oracle_mse[platform] += float(sample_oracle_mse)
+                platform_distribution_mean_mse[platform] += float(
+                    sample_distribution_mean_mse
+                )
+                platform_weighted_velocity_mse[platform] += float(
+                    sample_weighted_velocity_mse
+                )
+                platform_count[platform] += 1
     return {
         "rmse": math.sqrt(total_mse / max(total_count, 1)),
         "candidate_oracle_rmse": math.sqrt(total_oracle_mse / max(total_count, 1)),
+        "distribution_mean_rmse": math.sqrt(
+            total_distribution_mean_mse / max(total_count, 1)
+        ),
+        "weighted_velocity_rmse": math.sqrt(
+            total_weighted_velocity_mse / max(total_count, 1)
+        ),
+        "platform_rmse": {
+            platform: math.sqrt(total / platform_count[platform])
+            for platform, total in platform_mse.items()
+        },
+        "platform_candidate_oracle_rmse": {
+            platform: math.sqrt(total / platform_count[platform])
+            for platform, total in platform_oracle_mse.items()
+        },
+        "platform_distribution_mean_rmse": {
+            platform: math.sqrt(total / platform_count[platform])
+            for platform, total in platform_distribution_mean_mse.items()
+        },
+        "platform_weighted_velocity_rmse": {
+            platform: math.sqrt(total / platform_count[platform])
+            for platform, total in platform_weighted_velocity_mse.items()
+        },
+        "platform_eval_samples": dict(platform_count),
     }
+
+
+def print_platform_refiner_metrics(metrics: dict[str, Any]) -> None:
+    rmses = metrics.get("platform_rmse", {})
+    oracle_rmses = metrics.get("platform_candidate_oracle_rmse", {})
+    mean_rmses = metrics.get("platform_distribution_mean_rmse", {})
+    weighted_rmses = metrics.get("platform_weighted_velocity_rmse", {})
+    counts = metrics.get("platform_eval_samples", {})
+    if not rmses:
+        return
+    print(
+        f"val_rmse_by_platform average={metrics['rmse']:.6f} "
+        f"distribution_mean_average={metrics['distribution_mean_rmse']:.6f} "
+        f"weighted_velocity_average={metrics['weighted_velocity_rmse']:.6f} "
+        f"candidate_oracle_average={metrics['candidate_oracle_rmse']:.6f}:"
+    )
+    for platform in sorted(rmses):
+        print(
+            f"  {platform}: rmse={rmses[platform]:.6f} "
+            f"distribution_mean_rmse={mean_rmses.get(platform, float('nan')):.6f} "
+            f"weighted_velocity_rmse={weighted_rmses.get(platform, float('nan')):.6f} "
+            f"candidate_oracle_rmse={oracle_rmses.get(platform, float('nan')):.6f} "
+            f"eval_samples={int(counts.get(platform, 0))}"
+        )
 
 
 def main() -> None:
@@ -306,9 +401,12 @@ def main() -> None:
                 print(
                     f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "
                     f"val_rmse={metrics['rmse']:.6f} "
+                    f"distribution_mean_rmse={metrics['distribution_mean_rmse']:.6f} "
+                    f"weighted_velocity_rmse={metrics['weighted_velocity_rmse']:.6f} "
                     f"candidate_oracle_rmse={metrics['candidate_oracle_rmse']:.6f} "
                     f"seconds={metrics['epoch_seconds']:.1f}"
                 )
+                print_platform_refiner_metrics(metrics)
             else:
                 print(
                     f"epoch={epoch} train_loss={metrics['train_loss']:.6f} "

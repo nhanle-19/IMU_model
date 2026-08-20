@@ -1,0 +1,42 @@
+W0815 08:44:21.390000 2533040 site-packages/torch/distributed/run.py:874] 
+W0815 08:44:21.390000 2533040 site-packages/torch/distributed/run.py:874] *****************************************
+W0815 08:44:21.390000 2533040 site-packages/torch/distributed/run.py:874] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0815 08:44:21.390000 2533040 site-packages/torch/distributed/run.py:874] *****************************************
+/home/nvidia/miniconda3/envs/tartan/bin/python3.10: can't open file '/data/workspace/nhan/IMU_model/runs/velocity_diffusion/train_diffusion.py': [Errno 2] No such file or directory
+/home/nvidia/miniconda3/envs/tartan/bin/python3.10: can't open file '/data/workspace/nhan/IMU_model/runs/velocity_diffusion/train_diffusion.py': [Errno 2] No such file or directory
+E0815 08:44:22.478000 2533040 site-packages/torch/distributed/elastic/multiprocessing/api.py:1002] failed (exitcode: 2) local_rank: 0 (pid: 2533116) of binary: /home/nvidia/miniconda3/envs/tartan/bin/python3.10
+Traceback (most recent call last):
+  File "/home/nvidia/miniconda3/envs/tartan/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+  File "/home/nvidia/miniconda3/envs/tartan/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 367, in wrapper
+    return f(*args, **kwargs)
+  File "/home/nvidia/miniconda3/envs/tartan/lib/python3.10/site-packages/torch/distributed/run.py", line 1028, in main
+    run(args)
+  File "/home/nvidia/miniconda3/envs/tartan/lib/python3.10/site-packages/torch/distributed/run.py", line 1019, in run
+    elastic_launch(
+  File "/home/nvidia/miniconda3/envs/tartan/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 194, in __call__
+    return launch_agent(
+  File "/home/nvidia/miniconda3/envs/tartan/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 383, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+train_diffusion.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-08-15_08:44:22
+  host      : localhost
+  rank      : 1 (local_rank: 1)
+  exitcode  : 2 (pid: 2533117) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-08-15_08:44:22
+  host      : localhost
+  rank      : 0 (local_rank: 0)
+  exitcode  : 2 (pid: 2533116) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
