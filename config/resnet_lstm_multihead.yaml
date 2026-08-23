@@ -10,6 +10,10 @@ model_param:
   lstm_size: 128   # Increased for better representation learning
   lstm_layers: 2   # Increased layers for better temporal modeling
   lstm_dropout: 0.1  # Added dropout for regularization
+  temporal_backbone: tcn
+  tcn_layers: 3
+  tcn_kernel_size: 3
+  tcn_dropout: 0.1
   use_transformer: False
   platform_conditioning:
     enabled: True

@@ -15,8 +15,98 @@ from torch.nn.init import orthogonal_
 from tartan_imu.model.common.blocks import FcBlock, IMU_instantiate_trunk, ResBlock
 
 
+class Chomp1d(nn.Module):
+    """Remove right padding so a padded Conv1d stays causal and length-preserving."""
+
+    def __init__(self, chomp_size: int):
+        super().__init__()
+        self.chomp_size = int(chomp_size)
+
+    def forward(self, x):
+        if self.chomp_size <= 0:
+            return x
+        return x[:, :, : -self.chomp_size].contiguous()
+
+
+class TemporalConvBlock(nn.Module):
+    """Residual causal TCN block over the sequence-of-windows dimension."""
+
+    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout):
+        super().__init__()
+        padding = (kernel_size - 1) * dilation
+        self.net = nn.Sequential(
+            nn.Conv1d(
+                in_channels,
+                out_channels,
+                kernel_size,
+                padding=padding,
+                dilation=dilation,
+            ),
+            Chomp1d(padding),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(
+                out_channels,
+                out_channels,
+                kernel_size,
+                padding=padding,
+                dilation=dilation,
+            ),
+            Chomp1d(padding),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        self.downsample = (
+            nn.Conv1d(in_channels, out_channels, kernel_size=1)
+            if in_channels != out_channels
+            else None
+        )
+        self.activation = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        residual = x if self.downsample is None else self.downsample(x)
+        return self.activation(self.net(x) + residual)
+
+
+class TemporalConvEncoder(nn.Module):
+    """Small TCN replacement for the LSTM temporal encoder."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        super().__init__()
+        if num_layers < 1:
+            raise ValueError("TCN temporal encoder requires at least one layer")
+        layers = []
+        for i in range(num_layers):
+            in_channels = input_dim if i == 0 else hidden_dim
+            layers.append(
+                TemporalConvBlock(
+                    in_channels=in_channels,
+                    out_channels=hidden_dim,
+                    kernel_size=kernel_size,
+                    dilation=2**i,
+                    dropout=dropout,
+                )
+            )
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        # [B, T, C] -> [B, C, T] for Conv1d, then back to [B, T, C].
+        x = x.transpose(1, 2)
+        x = self.net(x)
+        return x.transpose(1, 2)
+
+
 class ResNetLSTMSeqNet(nn.Module):
-    """ResNet (4 residual groups) + LSTM trunk producing per-window features."""
+    """ResNet window encoder + configurable temporal trunk."""
 
     def __init__(
         self,
@@ -50,6 +140,7 @@ class ResNetLSTMSeqNet(nn.Module):
         self.lstm_size = cfg["model_param"]["lstm_size"]  # 256
         self.lstm_dropout = cfg["model_param"]["lstm_dropout"]  # 0.0
         self.num_layers = cfg["model_param"]["lstm_layers"]  # 1
+        self.temporal_backbone = cfg["model_param"].get("temporal_backbone", "lstm")
         self.win_size = (
             data_window_config["window_size"]
             + data_window_config["past_data_size"]
@@ -97,15 +188,28 @@ class ResNetLSTMSeqNet(nn.Module):
             nn.BatchNorm1d(self.res_net_out_channel),  # 128
         )
 
-        # LSTM
-        self.lstm = nn.LSTM(
-            self.resnet_code,
-            self.lstm_size,
-            self.num_layers,
-            batch_first=True,
-            dropout=self.lstm_dropout,
-            bidirectional=False,
-        )
+        if self.temporal_backbone == "lstm":
+            self.lstm = nn.LSTM(
+                self.resnet_code,
+                self.lstm_size,
+                self.num_layers,
+                batch_first=True,
+                dropout=self.lstm_dropout,
+                bidirectional=False,
+            )
+        elif self.temporal_backbone == "tcn":
+            self.temporal_encoder = TemporalConvEncoder(
+                input_dim=self.resnet_code,
+                hidden_dim=self.lstm_size,
+                num_layers=int(cfg["model_param"].get("tcn_layers", self.num_layers)),
+                kernel_size=int(cfg["model_param"].get("tcn_kernel_size", 3)),
+                dropout=float(cfg["model_param"].get("tcn_dropout", self.lstm_dropout)),
+            )
+        else:
+            raise ValueError(
+                "model_param.temporal_backbone must be 'lstm' or 'tcn', "
+                f"got {self.temporal_backbone!r}"
+            )
 
         # Output module
         self.output_block1 = FcBlock(
@@ -237,7 +341,8 @@ class ResNetLSTMSeqNet(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def forward(self, x, compute_type=None, hn=None, cn=None):
-        self.lstm.flatten_parameters()
+        if self.temporal_backbone == "lstm":
+            self.lstm.flatten_parameters()
         batch_size = x.size(0)  # [1, 10, 6, 100]
         seq_len = x.size(1)  # 10
         x = x.view(batch_size * seq_len, x.size(2), x.size(3))  # [10, 6, 100]
@@ -247,13 +352,16 @@ class ResNetLSTMSeqNet(nn.Module):
         x = self.residual_groups(x)  # 10*64*50->10*512*7
         embed = self.resnet_post_pro(x)  # 10*512*7->10*128*7
 
-        # LSTM
         embed = embed.view(batch_size, seq_len, -1)  # 10*128*7-> 1*10*896
-        if hn is None or cn is None:
-            (hn, cn) = self.init_hidden(
-                x, batch_size
-            )  # x:10*512*7  hn:1*1*256  1*1*256
-        out, (hn2, cn2) = self.lstm(embed, (hn, cn))  # 1*10*256
+        if self.temporal_backbone == "lstm":
+            if hn is None or cn is None:
+                (hn, cn) = self.init_hidden(
+                    x, batch_size
+                )  # x:10*512*7  hn:1*1*256  1*1*256
+            out, (hn2, cn2) = self.lstm(embed, (hn, cn))  # 1*10*256
+        else:
+            del hn, cn
+            out = self.temporal_encoder(embed)
         out = out.contiguous().view(
             -1, self.lstm_size * self.num_direction
         )  # out:10*256   lstm_size=256 num_direction=1

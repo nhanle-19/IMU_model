@@ -59,6 +59,8 @@ def _make_platform_feat(cfg, n):
 
 def test_forward_all_heads_produces_four_heads():
     cfg, model = _build_model()
+    assert cfg["model_param"]["temporal_backbone"] == "tcn"
+    assert model.model.temporal_backbone == "tcn"
     x = _make_feat(cfg, 4)
     out = model(x, compute_all_heads=True)
     assert set(out.keys()) == {"car", "dog", "drone", "human"}, out.keys()
