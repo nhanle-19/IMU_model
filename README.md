@@ -43,12 +43,14 @@ measurements, it predicts 3D body-frame velocity for inertial positioning.
 | ---: | ---: | ---: | ---: |
 | Multi-platform training data | Car, quadruped, drone, human | Reported ATE improvement | Reported online adaptation speed |
 
-The released implementation provides a ResNet-LSTM multi-head foundation
+The released implementation provides a ResNet temporal multi-head foundation
 model, pretrained inference, configurable training and evaluation, and an
-IROS 2026 challenge starter kit.
+IROS 2026 challenge starter kit. The active specialized training config uses a
+ResNet window encoder followed by a TCN temporal encoder.
 
 > [!NOTE]
-> This public release includes the LSTM-based `Foundation_Model`. The
+> This public release includes the ResNet-based `Foundation_Model`. The active
+> branch can use either `temporal_backbone: tcn` or `temporal_backbone: lstm`.
 > Transformer registration is retained for compatibility, but its core is not
 > included. Selecting `model_name: Transformer` raises `NotImplementedError`.
 
@@ -111,10 +113,14 @@ behavior is defined by a YAML configuration.
 ### Specialized Spectral Branch
 
 This branch is set up for the spectral platform-conditioning model. The active
-model YAML is `config/resnet_lstm_multihead.yaml`, where
+model YAML is `config/resnet_lstm_multihead.yaml`. It uses a ResNet window
+encoder with `model_param.temporal_backbone: tcn` by default, then routes
+through the multi-head `Foundation_Model`.
+
+The same YAML also enables spectral platform conditioning:
 `model_param.platform_conditioning.encoder: spectral` and
 `route_by_prediction: True` let one shared model infer the platform route
-internally.
+internally for anonymized test data.
 
 The training configs in this branch read the challenge-format dataset directly
 from `./data`:
@@ -126,6 +132,23 @@ data/val/<platform>/*.npz
 
 Those files should contain `imu` and `vel_body`, matching the diffusion branch
 data layout.
+
+To compare against the older recurrent temporal trunk, change the model YAML:
+
+```yaml
+model_param:
+  temporal_backbone: lstm
+```
+
+The default TCN settings are:
+
+```yaml
+model_param:
+  temporal_backbone: tcn
+  tcn_layers: 3
+  tcn_kernel_size: 3
+  tcn_dropout: 0.1
+```
 
 Run the branch smoke test:
 
