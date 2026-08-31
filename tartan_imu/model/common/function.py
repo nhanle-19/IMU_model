@@ -13,6 +13,7 @@ from collections import Counter
 
 import torch
 import torch.nn.functional as F
+
 from tartan_imu.model.common.losses import (
     efficient_multi_head_smooth_loss,
     get_sequence_smooth_loss,
@@ -122,6 +123,7 @@ def fun_train_forward(cfg, model, batch, start_cov_epochs, epoch):
         multi_head_mask,
         start_cov_epochs,
         cfg["data"]["use_local_coord"],
+        drift_loss_cfg=cfg.get("train", {}).get("drift_loss"),
     )
     loss = _add_platform_classification_loss(
         cfg, loss, platform_aux.get("_platform_logits"), motion_type
@@ -221,6 +223,7 @@ def fun_train_forward_efficient(cfg, model, batch, start_cov_epochs, epoch):
         multi_head_mask,
         start_cov_epochs,
         cfg["data"]["use_local_coord"],
+        drift_loss_cfg=cfg.get("train", {}).get("drift_loss"),
     )
     loss = _add_platform_classification_loss(
         cfg, loss, platform_aux.get("_platform_logits"), motion_type
@@ -299,7 +302,7 @@ def fun_test_forward(cfg, model, batch, start_cov_epochs, epoch, past_kv=None, t
 
     # Determine the most common motion type in the batch
     frequency = Counter(motion_type.tolist())
-    most_motion_pattern, count = frequency.most_common(1)[0]
+    most_motion_pattern, _count = frequency.most_common(1)[0]
     motion_types = {1: "car", 2: "dog", 3: "drone", 4: "human"}
 
     if most_motion_pattern not in motion_types:

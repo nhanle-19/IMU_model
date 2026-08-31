@@ -8,7 +8,7 @@ The training loss path is ``single_head_velocity_loss`` (L1, weight=20). Helpers
 here cover the multi-head masked-loss reduction and the sequence loss used
 during evaluation.
 """
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 
@@ -71,19 +71,21 @@ def multi_head_smooth_loss(
     multi_head_mask: dict,
     start_cov_epoch: int,
     use_local_coord: bool,
+    drift_loss_cfg: dict | None = None,
 ) -> torch.Tensor:
     """Sum the per-head masked smooth loss across all motion-type heads."""
     multi_head_loss = {}
     total_loss = 0
-    for key in multi_head_pred:
+    for key, pred in multi_head_pred.items():
         multi_head_loss[key] = single_head_mask_loss(
-            multi_head_pred[key],
+            pred,
             multi_head_cov[key],
             targ,
             epoch,
             multi_head_mask[key],
             start_cov_epoch,
             use_local_coord,
+            drift_loss_cfg=drift_loss_cfg,
         )
         total_loss = multi_head_loss[key] + total_loss
     return total_loss
@@ -97,6 +99,7 @@ def efficient_multi_head_smooth_loss(
     multi_head_mask: dict,
     start_cov_epochs: int,
     use_local_coord: bool,
+    drift_loss_cfg: dict | None = None,
 ) -> torch.Tensor:
     """Efficient multi-head smooth loss without hot-path debug I/O."""
     total_loss = 0
@@ -114,6 +117,7 @@ def efficient_multi_head_smooth_loss(
                     mask,
                     start_cov_epochs,
                     use_local_coord,
+                    drift_loss_cfg=drift_loss_cfg,
                 )
 
                 total_loss += head_loss
@@ -158,6 +162,50 @@ def _masked_mean(loss: torch.Tensor, mask_view: torch.Tensor) -> torch.Tensor:
     return loss.sum() / active
 
 
+def sequence_velocity_bias_loss(
+    pred: torch.Tensor,
+    targ: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    reduction: str = "l1",
+) -> torch.Tensor:
+    """Penalize signed velocity bias across each active sequence.
+
+    The leaderboard integrates velocity, so a small same-sign error can drift
+    even when per-window absolute error looks acceptable. This term measures
+    mean(pred - target) over the sequence dimension and penalizes that bias per
+    active sample.
+    """
+    active = mask.bool()
+    if not torch.any(active):
+        return pred.sum() * 0.0
+
+    bias = (pred[active] - targ[active]).mean(dim=1)
+    if reduction == "l2":
+        return bias.pow(2).mean()
+    if reduction != "l1":
+        raise ValueError(f"Unsupported drift loss reduction: {reduction!r}")
+    return bias.abs().mean()
+
+
+def _add_sequence_drift_loss(
+    base_loss: torch.Tensor,
+    pred: torch.Tensor,
+    targ: torch.Tensor,
+    mask: torch.Tensor,
+    drift_loss_cfg: dict | None,
+) -> torch.Tensor:
+    if not drift_loss_cfg or not drift_loss_cfg.get("enabled", False):
+        return base_loss
+    weight = float(drift_loss_cfg.get("weight", 0.0))
+    if weight <= 0:
+        return base_loss
+    reduction = drift_loss_cfg.get("reduction", "l1")
+    return base_loss + weight * sequence_velocity_bias_loss(
+        pred, targ, mask, reduction=reduction
+    )
+
+
 def single_head_mask_loss(
     pred: torch.Tensor,
     pred_cov: torch.Tensor,
@@ -166,6 +214,7 @@ def single_head_mask_loss(
     mask: torch.Tensor,
     start_cov_epoch: int,
     use_local_coord: bool = False,
+    drift_loss_cfg: dict | None = None,
 ) -> torch.Tensor:
     """
     Simplified masked loss per head:
@@ -186,7 +235,10 @@ def single_head_mask_loss(
         # An all-True mask reduces to torch.mean(loss) (single-head baseline).
         mask_view = mask.bool().view(-1, 1, 1)
         loss = loss * mask_view
-        return _masked_mean(loss, mask_view)
+        base_loss = _masked_mean(loss, mask_view)
+        return _add_sequence_drift_loss(
+            base_loss, pred, targ, mask, drift_loss_cfg
+        )
 
     # Per-step MSE
     mse_loss = (pred - targ).pow(2)
@@ -219,7 +271,8 @@ def single_head_mask_loss(
     else:
         loss = mse_loss
 
-    return _masked_mean(loss, mask_view)
+    base_loss = _masked_mean(loss, mask_view)
+    return _add_sequence_drift_loss(base_loss, pred, targ, mask, drift_loss_cfg)
 
 
 def L2(dist: torch.Tensor) -> torch.Tensor:

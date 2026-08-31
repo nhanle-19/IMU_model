@@ -83,6 +83,13 @@ train:
   add_noise: True                  # unused
   active_heads: ["car","drone","dog","human"]
 
+  # Penalize same-sign velocity bias across each 10-window training sequence.
+  # This targets leaderboard ATE drift while preserving the per-window loss.
+  drift_loss:
+    enabled: True
+    weight: 2.0
+    reduction: l1
+
   # Optimizer settings
   optimizer:
     learning_rate: 0.0001          # Reduced learning rate for better stability
@@ -101,6 +108,15 @@ val:
   batch_size: 64
   n_workers: 2
   prefetch_factor: 2
+
+# ============================================================================
+# SUBMISSION / INFERENCE POST-PROCESSING
+# ============================================================================
+inference:
+  # 1 preserves raw predictions. Try 3 on validation for a light jitter/ATE check.
+  velocity_smoothing_kernel: 1
+  # Smooth platform logits inside each 10-window sequence before route-by-prediction.
+  classifier_smoothing_kernel: 3
 
 # ============================================================================
 # TESTING CONFIGURATION

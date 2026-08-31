@@ -122,6 +122,41 @@ The same YAML also enables spectral platform conditioning:
 `route_by_prediction: True` let one shared model infer the platform route
 internally for anonymized test data.
 
+The branch has three repo-local improvement knobs for the current spectral
+direction:
+
+- **Classifier smoothing** smooths platform logits inside each 10-window
+  inference sequence before the route-by-prediction head choice. This is meant
+  to reduce one-window head flips without using whole-trajectory labels or
+  post-hoc platform recovery.
+- **Velocity smoothing** optionally applies a small moving average to predicted
+  velocities inside each 10-window inference sequence. Keep this off unless
+  validation shows the ATE gain is larger than the AVE cost.
+- **Drift loss** adds a training-time sequence velocity-bias penalty. It
+  penalizes the mean signed error over each 10-window training sequence, which
+  directly targets the kind of consistent bias that integrates into ATE drift.
+
+```mermaid
+flowchart TD
+    A[Raw IMU<br/>200 Hz accel + gyro] --> B[Window builder<br/>1 s windows, seq_len 10]
+    B --> C[Low-pass + downsample<br/>velocity branch: 40 Hz]
+    B --> D[Spectral platform window<br/>classifier branch: 200 Hz]
+    C --> E[ResNet window encoder]
+    E --> F[TCN temporal trunk<br/>causal Conv1d over 10 windows]
+    D --> G[Spectral platform encoder]
+    G --> H[Platform logits + latent]
+    H --> I[FiLM condition shared features]
+    F --> I
+    I --> J[car / dog / drone / human heads]
+    H --> K[Classifier-logit smoothing<br/>optional, sequence-local]
+    K --> L[Route-by-prediction head choice]
+    J --> L
+    L --> M[Velocity smoothing<br/>optional, sequence-local]
+    M --> N[submission.csv<br/>window_id, vx, vy, vz]
+    J --> O[Per-window velocity loss]
+    O --> P[Sequence drift loss<br/>mean signed velocity error]
+```
+
 The training configs in this branch read the challenge-format dataset directly
 from `./data`:
 
@@ -148,6 +183,26 @@ model_param:
   tcn_layers: 3
   tcn_kernel_size: 3
   tcn_dropout: 0.1
+```
+
+The default spectral training config also enables the sequence drift term:
+
+```yaml
+train:
+  drift_loss:
+    enabled: True
+    weight: 2.0
+    reduction: l1
+```
+
+Submission-time smoothing is controlled by the config or CLI. `1` disables a
+kernel. The current config keeps velocity smoothing off and enables light
+classifier smoothing:
+
+```yaml
+inference:
+  velocity_smoothing_kernel: 1
+  classifier_smoothing_kernel: 3
 ```
 
 Run the branch smoke test:
@@ -210,6 +265,18 @@ python starter/tartanimu_submission.py \
   --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml \
   --checkpoint ./exp_result/tartan_imu_dataset/checkpoints/best_model.pt \
   --out submission_spectral.csv
+```
+
+To override smoothing for a validation or test candidate:
+
+```bash
+python starter/tartanimu_submission.py \
+  --split test \
+  --config ./config/datasets/tartanimu/tartan_imu_dataset.yaml \
+  --checkpoint ./exp_result/tartan_imu_dataset/checkpoints/best_model.pt \
+  --velocity-smoothing-kernel 3 \
+  --classifier-smoothing-kernel 3 \
+  --out submission_spectral_smooth.csv
 ```
 
 For a labelled validation submission, use the same command with `--split val`

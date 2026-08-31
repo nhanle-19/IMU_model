@@ -202,6 +202,33 @@ def _moving_average_lowpass(feat: np.ndarray, kernel_size: int) -> np.ndarray:
     return filtered
 
 
+def _moving_average_time(values: np.ndarray, kernel_size: int) -> np.ndarray:
+    """Smooth a [T, C] or [B, T, C] sequence along its time dimension."""
+    kernel_size = int(kernel_size)
+    if kernel_size <= 1:
+        return values
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+
+    single_sequence = values.ndim == 2
+    if single_sequence:
+        values = values[None, ...]
+    if values.ndim != 3:
+        raise ValueError("Expected [T, C] or [B, T, C] values to smooth")
+
+    pad = kernel_size // 2
+    padded = np.pad(values, ((0, 0), (pad, pad), (0, 0)), mode="edge")
+    kernel = np.ones(kernel_size, dtype=np.float32) / float(kernel_size)
+    smoothed = np.empty_like(values, dtype=np.float32)
+    for batch_idx in range(values.shape[0]):
+        for channel in range(values.shape[2]):
+            smoothed[batch_idx, :, channel] = np.convolve(
+                padded[batch_idx, :, channel], kernel, mode="valid"
+            )
+
+    return smoothed[0] if single_sequence else smoothed
+
+
 def _windows_for_traj(feature, win_idxs, win_size, step, *, cfg):
     """Slice a trajectory feature array into (num_windows, channels, frames)."""
     pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
@@ -242,7 +269,18 @@ def _windows_for_traj(feature, win_idxs, win_size, step, *, cfg):
 
 
 @torch.no_grad()
-def _predict_traj(model, windows, platform_windows, platform, seq_len, device, batch_seqs, cfg):
+def _predict_traj(
+    model,
+    windows,
+    platform_windows,
+    platform,
+    seq_len,
+    device,
+    batch_seqs,
+    cfg,
+    velocity_smoothing_kernel=1,
+    classifier_smoothing_kernel=1,
+):
     """Predict body-frame velocity for one trajectory's windows."""
     m = windows.shape[0]
     pad = (-m) % seq_len
@@ -271,7 +309,9 @@ def _predict_traj(model, windows, platform_windows, platform, seq_len, device, b
         for key in _AUX_KEYS:
             heads.pop(key, None)
         if platform is not None:
-            preds.append(heads[platform].reshape(-1, 3).cpu().numpy())
+            pred = heads[platform].cpu().numpy()
+            pred = _moving_average_time(pred, velocity_smoothing_kernel)
+            preds.append(pred.reshape(-1, 3))
             continue
 
         pcfg = cfg.get("model_param", {}).get("platform_conditioning", {})
@@ -281,18 +321,21 @@ def _predict_traj(model, windows, platform_windows, platform, seq_len, device, b
                 "platform logits for route_by_prediction."
             )
 
-        predicted = torch.argmax(logits.detach(), dim=-1).reshape(-1).cpu().numpy()
-        flat_heads = {
-            name: value.reshape(-1, 3).cpu().numpy()
+        logits_np = logits.detach().cpu().numpy()
+        logits_np = _moving_average_time(logits_np, classifier_smoothing_kernel)
+        predicted = np.argmax(logits_np, axis=-1)
+        head_arrays = {
+            name: value.detach().cpu().numpy()
             for name, value in heads.items()
             if name in PLATFORMS
         }
-        pred = np.zeros((len(predicted), 3), dtype=np.float32)
+        pred = np.zeros((*predicted.shape, 3), dtype=np.float32)
         for platform_idx, platform_name in PLATFORM_BY_INDEX.items():
             mask = predicted == platform_idx
             if np.any(mask):
-                pred[mask] = flat_heads[platform_name][mask]
-        preds.append(pred)
+                pred[mask] = head_arrays[platform_name][mask]
+        pred = _moving_average_time(pred, velocity_smoothing_kernel)
+        preds.append(pred.reshape(-1, 3))
     return np.concatenate(preds, axis=0)[:m]
 
 
@@ -317,6 +360,12 @@ def main() -> None:
     parser.add_argument("--config", default=None, help="local yaml (else download from HF)")
     parser.add_argument("--device", default=None, help="cuda:0 / cpu (auto if unset)")
     parser.add_argument("--batch_seqs", type=int, default=256)
+    parser.add_argument("--velocity-smoothing-kernel", type=int, default=None,
+                        help="optional odd moving-average kernel over each 10-window "
+                             "prediction sequence; 1 disables smoothing")
+    parser.add_argument("--classifier-smoothing-kernel", type=int, default=None,
+                        help="optional odd moving-average kernel over platform logits "
+                             "inside each 10-window sequence; 1 disables smoothing")
     args = parser.parse_args()
 
     if args.split is not None:
@@ -331,6 +380,17 @@ def main() -> None:
     config_path, checkpoint_path = _resolve_weights(args.checkpoint, args.config)
     cfg = _load_runtime_config(config_path)
     cfg["train"]["use_multi_gpu"] = False
+    inference_cfg = cfg.get("inference", {})
+    velocity_smoothing_kernel = (
+        args.velocity_smoothing_kernel
+        if args.velocity_smoothing_kernel is not None
+        else int(inference_cfg.get("velocity_smoothing_kernel", 1))
+    )
+    classifier_smoothing_kernel = (
+        args.classifier_smoothing_kernel
+        if args.classifier_smoothing_kernel is not None
+        else int(inference_cfg.get("classifier_smoothing_kernel", 1))
+    )
     step = int(cfg["data"]["imu_freq"] / cfg["data"]["sample_freq"])
     seq_len = int(cfg["train"]["seq_len"])
     win_size = int(cfg["model_param"]["window_time"] * cfg["data"]["imu_freq"])
@@ -370,7 +430,9 @@ def main() -> None:
     model.load_state_dict(checkpoint.get("model_state_dict", checkpoint), strict=False)
     model.to(device).eval()
     print(f"loaded {checkpoint_path} | win_size={win_size} step={step} "
-          f"seq_len={seq_len} device={device} route_by_prediction={route_by_prediction}")
+          f"seq_len={seq_len} device={device} route_by_prediction={route_by_prediction} "
+          f"velocity_smoothing={velocity_smoothing_kernel} "
+          f"classifier_smoothing={classifier_smoothing_kernel}")
 
     rows: dict = {}
     for traj_id, (csv_platform, pairs) in sorted(by_traj.items()):
@@ -399,6 +461,8 @@ def main() -> None:
             device,
             args.batch_seqs,
             cfg,
+            velocity_smoothing_kernel,
+            classifier_smoothing_kernel,
         )
         for (_wi, wid), v in zip(pairs, pred):
             rows[wid] = (float(v[0]), float(v[1]), float(v[2]))
